@@ -71,6 +71,7 @@ const ORDER: u8 = 20;
 pub enum PaletteAction {
     TabCreate,
     TabClose,
+    ReopenClosedTab,
     TabCloseUnfocused,
     SelectNextTab,
     SelectPrevTab,
@@ -122,6 +123,11 @@ const COMMANDS: &[Command] = &[
         title: "Close Tab",
         shortcut: "Cmd+W",
         action: PaletteAction::TabClose,
+    },
+    Command {
+        title: "Reopen Closed Tab",
+        shortcut: "Cmd+Shift+T",
+        action: PaletteAction::ReopenClosedTab,
     },
     Command {
         title: "Close Other Tabs",

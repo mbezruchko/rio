@@ -103,6 +103,9 @@ pub struct Screen<'screen> {
     pub allow_manual_dragging: bool,
     last_chrome_press: Option<ChromePress>,
     last_close_press: Option<(std::time::Instant, f32)>,
+    /// Tabs closed in this window with their former index, most recent
+    /// last, for `ReopenClosedTab`.
+    closed_tabs: Vec<(usize, crate::arrangement::TabArrangement)>,
     pub grids: rustc_hash::FxHashMap<usize, rio_backend::sugarloaf::grid::GridRenderer>,
     pub grid_rasterizer: rio_grid::GridGlyphRasterizer,
 }
@@ -354,6 +357,7 @@ impl Screen<'_> {
             allow_manual_dragging: config.navigation.is_enabled(),
             last_chrome_press: None,
             last_close_press: None,
+            closed_tabs: Vec::new(),
             grids: rustc_hash::FxHashMap::default(),
             grid_rasterizer: rio_grid::GridGlyphRasterizer::new(),
         })
@@ -1498,6 +1502,10 @@ impl Screen<'_> {
                     Act::CloseWindow => {
                         self.context_manager.close_window();
                     }
+                    Act::ReopenClosedTab => {
+                        self.cancel_search(clipboard);
+                        self.reopen_closed_tab();
+                    }
                     Act::RestoreArrangement => {
                         let palette = &mut self.renderer.command_palette;
                         palette.set_enabled(true);
@@ -1823,6 +1831,49 @@ impl Screen<'_> {
         });
     }
 
+    /// Remember the current tab before it closes, for `ReopenClosedTab`.
+    fn remember_closing_tab(&mut self) {
+        const CLOSED_TABS_LIMIT: usize = 20;
+
+        let grid = self.context_manager.current_grid();
+        let tab = crate::arrangement::TabArrangement {
+            title: grid.custom_title.clone(),
+            color: grid.custom_color.map(crate::arrangement::color_to_hex),
+            layout: grid.arrangement_layout(),
+        };
+        if self.closed_tabs.len() == CLOSED_TABS_LIMIT {
+            self.closed_tabs.remove(0);
+        }
+        self.closed_tabs
+            .push((self.context_manager.current_index(), tab));
+    }
+
+    /// Reopen this window's most recently closed tab where it was: same
+    /// splits, directories, name and color, with fresh shells.
+    pub fn reopen_closed_tab(&mut self) {
+        let Some((index, tab)) = self.closed_tabs.pop() else {
+            return;
+        };
+        self.open_tab_in(tab.layout.first_cwd().map(str::to_owned));
+        // Native tabs open asynchronously in their own window.
+        if self.context_manager.config.is_native {
+            return;
+        }
+        self.apply_tab_arrangement(&tab);
+
+        let from = self.context_manager.current_index();
+        let to = index.min(self.context_manager.len().saturating_sub(1));
+        if to != from {
+            self.context_manager.move_current_tab_to(to);
+            let tab_width = self.island_tab_layout(self.context_manager.len()).tab_width;
+            if let Some(ref mut island) = self.renderer.island {
+                island.remap_tab_move(from, to, tab_width);
+            }
+        }
+        self.refresh_titles();
+        self.mark_dirty();
+    }
+
     /// Replay `layout`'s splits on `pane`: split it, size the pair, then
     /// recurse into both halves (each split wraps its pane in place).
     fn replay_split(&mut self, layout: &crate::arrangement::Layout, pane: taffy::NodeId) {
@@ -1906,6 +1957,7 @@ impl Screen<'_> {
     }
 
     pub fn close_tab(&mut self, clipboard: &mut Clipboard) {
+        self.remember_closing_tab();
         self.clear_selection();
         self.context_manager
             .close_current_context(&mut self.sugarloaf);
@@ -4079,6 +4131,7 @@ impl Screen<'_> {
             PaletteAction::CloseWindow => {
                 self.context_manager.close_window();
             }
+            PaletteAction::ReopenClosedTab => self.reopen_closed_tab(),
             PaletteAction::Quit => {
                 self.context_manager.quit();
             }

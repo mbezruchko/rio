@@ -273,6 +273,7 @@ impl From<String> for Action {
             "restorearrangement" => Some(Action::RestoreArrangement),
             "savearrangement" => Some(Action::SaveArrangement),
             "closewindow" => Some(Action::CloseWindow),
+            "reopenclosedtab" => Some(Action::ReopenClosedTab),
             "none" => Some(Action::None),
             _ => None,
         };
@@ -534,6 +535,9 @@ pub enum Action {
 
     /// Close the current window with all its tabs.
     CloseWindow,
+
+    /// Reopen the most recently closed tab (splits, directories, color).
+    ReopenClosedTab,
 
     /// Allow receiving char input.
     ReceiveChar,
@@ -1143,6 +1147,7 @@ pub fn platform_key_bindings(
         "r", ModifiersState::SUPER | ModifiersState::SHIFT; Action::RestoreArrangement;
         "s", ModifiersState::SUPER | ModifiersState::SHIFT; Action::SaveArrangement;
         "w", ModifiersState::SUPER | ModifiersState::SHIFT; Action::CloseWindow;
+        "t", ModifiersState::SUPER | ModifiersState::SHIFT; Action::ReopenClosedTab;
 
         // Search
         "f", ModifiersState::SUPER, ~BindingMode::SEARCH; Action::SearchForward;
