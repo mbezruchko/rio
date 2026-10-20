@@ -103,10 +103,16 @@ const FLAT_STATUS_DOT_GAP: f32 = 8.0;
 const FLAT_STATUS_DOT_RESERVE: f32 = 16.0;
 // Per-tab OSC 9;4 progress line along the tab's top edge.
 const FLAT_PROGRESS_HEIGHT: f32 = 2.0;
-// Indeterminate progress: a segment this share of the tab wide sweeps
-// across it once per period (seconds).
-const FLAT_PROGRESS_SEGMENT: f32 = 0.35;
-const FLAT_PROGRESS_PERIOD: f32 = 1.6;
+// Indeterminate progress, as iTerm2 draws it: a dark trough sweeps the
+// tab left to right once per period (seconds). Brightness rises with the
+// distance from it, `GAIN` times faster than reaching full brightness
+// only opposite the trough, so the far side stays fully lit. Drawn as
+// `SLICE`-wide strips, each with its own brightness.
+const FLAT_PROGRESS_PERIOD: f32 = 1.5;
+const FLAT_PROGRESS_GAIN: f32 = 1.23;
+const FLAT_PROGRESS_SLICE: f32 = 1.0;
+// iTerm2's progress green.
+const FLAT_PROGRESS_GREEN: [f32; 4] = [0.0, 0.86, 0.0, 1.0];
 // The `⌥⌘N` window label right of the traffic lights.
 #[cfg(target_os = "macos")]
 const FLAT_WINDOW_LABEL_WIDTH: f32 = 52.0;
@@ -309,18 +315,71 @@ fn rgb_color(color: rio_backend::config::colors::ColorRgb) -> [f32; 4] {
     ]
 }
 
-/// The sliding segment of an indeterminate progress line at `seconds`:
-/// it eases in from the left edge, across the tab and off the right edge
-/// once per `FLAT_PROGRESS_PERIOD`. Returns its left edge and width,
-/// clipped to the tab.
-fn indeterminate_segment(left: f32, width: f32, seconds: f32) -> (f32, f32) {
-    let segment = width * FLAT_PROGRESS_SEGMENT;
-    let phase = (seconds / FLAT_PROGRESS_PERIOD).fract();
-    let eased = phase * phase * (3.0 - 2.0 * phase);
-    let start = left - segment + eased * (width + segment);
-    let x0 = start.max(left);
-    let x1 = (start + segment).min(left + width);
-    (x0, (x1 - x0).max(0.0))
+/// Brightness (`0..=1`) of an indeterminate progress line at `x` on a
+/// tab spanning `left..left + width`, `seconds` into the animation: zero
+/// at the trough, which sits at the tab's left edge at 0 s and wraps
+/// around once per `FLAT_PROGRESS_PERIOD`.
+fn indeterminate_brightness(x: f32, left: f32, width: f32, seconds: f32) -> f32 {
+    if width <= 0.0 {
+        return 0.0;
+    }
+    let trough = (seconds / FLAT_PROGRESS_PERIOD).fract() * width;
+    let offset = (x - left - trough).rem_euclid(width);
+    let distance = offset.min(width - offset);
+    (FLAT_PROGRESS_GAIN * 2.0 * distance / width).min(1.0)
+}
+
+/// Draw an OSC 9;4 progress line along `left..left + width` at `y`, the
+/// way iTerm2 does: a partial bar, or for indeterminate progress a full
+/// one with a dark trough sweeping it, `seconds` into the animation.
+/// Returns whether the line animates.
+fn draw_flat_progress(
+    sugarloaf: &mut Sugarloaf,
+    report: ProgressReport,
+    left: f32,
+    width: f32,
+    y: f32,
+    seconds: f32,
+) -> bool {
+    let (fraction, color) = progress_line(report);
+    if report.state != ProgressState::Indeterminate {
+        sugarloaf.rect(
+            None,
+            left,
+            y,
+            width * fraction,
+            FLAT_PROGRESS_HEIGHT,
+            color,
+            0.0,
+            1,
+        );
+        return false;
+    }
+    let right = left + width;
+    let mut x = left;
+    while x < right {
+        let slice = FLAT_PROGRESS_SLICE.min(right - x);
+        let brightness = indeterminate_brightness(x + slice * 0.5, left, width, seconds);
+        // Strips overlap by half a point so rounding never leaves a seam
+        // between them.
+        sugarloaf.rect(
+            None,
+            x,
+            y,
+            (slice + 0.5).min(right - x),
+            FLAT_PROGRESS_HEIGHT,
+            [
+                color[0] * brightness,
+                color[1] * brightness,
+                color[2] * brightness,
+                color[3],
+            ],
+            0.0,
+            1,
+        );
+        x += slice;
+    }
+    true
 }
 
 /// Share of the tab width and color of a tab's OSC 9;4 progress line.
@@ -334,7 +393,7 @@ fn progress_line(report: ProgressReport) -> (f32, [f32; 4]) {
     let color = match report.state {
         ProgressState::Error => [0.96, 0.33, 0.30, 1.0],
         ProgressState::Pause => [0.98, 0.78, 0.25, 1.0],
-        _ => [0.30, 0.85, 0.39, 1.0],
+        _ => FLAT_PROGRESS_GREEN,
     };
     (fraction, color)
 }
@@ -968,6 +1027,19 @@ impl Island {
 
         let width = window_width / scale_factor;
 
+        // Flat tabs: the iTerm2-style line, across the window.
+        if self.tab_style == TabStyle::Flat {
+            let seconds = self
+                .progress_started_at
+                .map_or(0.0, |t| t.elapsed().as_secs_f32());
+            let report = ProgressReport {
+                state,
+                progress: self.progress_value,
+            };
+            draw_flat_progress(sugarloaf, report, 0.0, width, y_position, seconds);
+            return;
+        }
+
         // Determine color based on state
         let color = match state {
             ProgressState::Error => self.progress_bar_error_color,
@@ -1426,26 +1498,13 @@ impl Island {
                     );
                 }
                 if let Some(report) = context_manager.tab_progress(tab_index) {
-                    let (fraction, color) = progress_line(report);
-                    let (x, width) = if report.state == ProgressState::Indeterminate {
-                        tab_progress_animating = true;
-                        indeterminate_segment(
-                            tab_x,
-                            tab_width,
-                            self.progress_epoch.elapsed().as_secs_f32(),
-                        )
-                    } else {
-                        (tab_x, tab_width * fraction)
-                    };
-                    sugarloaf.rect(
-                        None,
-                        x,
+                    tab_progress_animating |= draw_flat_progress(
+                        sugarloaf,
+                        report,
+                        tab_x,
+                        tab_width,
                         0.0,
-                        width,
-                        FLAT_PROGRESS_HEIGHT,
-                        color,
-                        0.0,
-                        1,
+                        self.progress_epoch.elapsed().as_secs_f32(),
                     );
                 }
                 let mut hint_left = tab_x + tab_width - FLAT_HINT_MARGIN_RIGHT;
@@ -2522,21 +2581,27 @@ mod tests {
     }
 
     #[test]
-    fn indeterminate_segment_sweeps_across_the_tab() {
+    fn indeterminate_trough_sweeps_left_to_right() {
         let (left, width) = (100.0, 200.0);
-        // Starts hidden at the left edge and ends past the right one.
-        assert_eq!(indeterminate_segment(left, width, 0.0).1, 0.0);
-        let end = indeterminate_segment(left, width, FLAT_PROGRESS_PERIOD * 0.999);
-        assert!(end.1 < 1.0);
-        // Mid-sweep: a full segment, inside the tab.
-        let (x, w) = indeterminate_segment(left, width, FLAT_PROGRESS_PERIOD * 0.5);
-        assert!((w - width * FLAT_PROGRESS_SEGMENT).abs() < 0.01);
-        assert!(x >= left && x + w <= left + width);
-        // Never leaves the tab.
-        for i in 0..50 {
-            let (x, w) = indeterminate_segment(left, width, i as f32 * 0.07);
-            assert!(x >= left && x + w <= left + width + 0.001);
-        }
+        let at = |x: f32, seconds: f32| indeterminate_brightness(x, left, width, seconds);
+        // The trough starts at the left edge, fully lit opposite it.
+        assert_eq!(at(left, 0.0), 0.0);
+        assert_eq!(at(left + width * 0.5, 0.0), 1.0);
+        // Brightness rises linearly away from it, on both sides.
+        let near = at(left + 20.0, 0.0);
+        assert!((near - FLAT_PROGRESS_GAIN * 0.2).abs() < 1e-4);
+        assert!((at(left + width - 20.0, 0.0) - near).abs() < 1e-4);
+        // A quarter period later it sits a quarter of the way across...
+        let quarter = FLAT_PROGRESS_PERIOD * 0.25;
+        assert!(at(left + width * 0.25, quarter) < 1e-4);
+        assert!(at(left, quarter) > 0.0);
+        // ...and after a full period it is back at the left edge.
+        assert!(at(left, FLAT_PROGRESS_PERIOD) < 1e-4);
+        // A wide band opposite the trough stays at full brightness.
+        let lit = (0..200)
+            .filter(|&i| at(left + i as f32, 0.0) >= 1.0)
+            .count();
+        assert!((30..50).contains(&lit), "{lit}");
     }
 
     #[test]
