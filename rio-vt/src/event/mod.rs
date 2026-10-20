@@ -263,7 +263,11 @@ pub enum RioEvent {
     CursorBlinkingChangeOnRoute(usize),
 
     /// Progress bar report from OSC 9;4 sequence
-    ProgressReport(ProgressReport),
+    /// OSC 9;4 progress from the pane with this route id.
+    ProgressReport(usize, ProgressReport),
+
+    /// OSC 21337 session status of the pane with this route id.
+    SessionStatus(usize, SessionStatus),
 
     /// Terminal bell ring, from the PTY identified by `route_id`.
     Bell(usize),
@@ -338,8 +342,11 @@ impl Debug for RioEvent {
             RioEvent::CursorBlinkingChangeOnRoute(route_id) => {
                 write!(f, "CursorBlinkingChangeOnRoute {route_id}")
             }
-            RioEvent::ProgressReport(report) => {
-                write!(f, "ProgressReport({:?})", report)
+            RioEvent::SessionStatus(route_id, status) => {
+                write!(f, "SessionStatus({route_id}, {status:?})")
+            }
+            RioEvent::ProgressReport(route_id, report) => {
+                write!(f, "ProgressReport({route_id}, {:?})", report)
             }
             RioEvent::MouseCursorDirty => write!(f, "MouseCursorDirty"),
             RioEvent::ResetTitle => write!(f, "ResetTitle"),
@@ -560,6 +567,45 @@ impl Default for SearchState {
             dfas: Default::default(),
         }
     }
+}
+
+/// A session's status from OSC 21337 (iTerm2 "Session Status"): the tab
+/// shows `status` as a subtitle in `status_color` and a dot in
+/// `indicator`, e.g. an AI agent working / waiting / done.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionStatus {
+    pub status: Option<String>,
+    pub indicator: Option<ColorRgb>,
+    pub status_color: Option<ColorRgb>,
+}
+
+impl SessionStatus {
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.status.is_none() && self.indicator.is_none()
+    }
+
+    /// Merge one OSC 21337 update into this status.
+    pub fn apply(&mut self, update: SessionStatusUpdate) {
+        if let Some(status) = update.status {
+            self.status = status;
+        }
+        if let Some(indicator) = update.indicator {
+            self.indicator = indicator;
+        }
+        if let Some(status_color) = update.status_color {
+            self.status_color = status_color;
+        }
+    }
+}
+
+/// One OSC 21337 sequence: a key left out keeps its field (`None`), a key
+/// with an empty value clears it (`Some(None)`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionStatusUpdate {
+    pub status: Option<Option<String>>,
+    pub indicator: Option<Option<ColorRgb>>,
+    pub status_color: Option<Option<ColorRgb>>,
 }
 
 /// Progress bar state for OSC 9;4 ConEmu/Windows Terminal progress reporting

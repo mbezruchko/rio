@@ -459,6 +459,8 @@ where
     pub route_id: usize,
     title_stack: Vec<String>,
     pub current_directory: Option<std::path::PathBuf>,
+    /// Status from `OSC 21337` (iTerm2 Session Status).
+    pub session_status: crate::event::SessionStatus,
     /// Shell state from `OSC 1337 ; SetUserVar` (iTerm2 style).
     pub user_vars: rustc_hash::FxHashMap<String, String>,
 
@@ -531,6 +533,7 @@ impl<U: EventListener> Crosswords<U> {
             route_id,
             title_stack: Default::default(),
             current_directory: None,
+            session_status: Default::default(),
             user_vars: rustc_hash::FxHashMap::default(),
             damage_event_in_flight: false,
             modify_other_keys: 0,
@@ -3474,8 +3477,22 @@ impl<U: EventListener> Handler for Crosswords<U> {
     }
 
     fn set_progress_report(&mut self, report: crate::event::ProgressReport) {
-        self.event_proxy
-            .send_event(RioEvent::ProgressReport(report), self.window_id);
+        self.event_proxy.send_event(
+            RioEvent::ProgressReport(self.route_id, report),
+            self.window_id,
+        );
+    }
+
+    fn set_session_status(&mut self, update: crate::event::SessionStatusUpdate) {
+        let mut status = self.session_status.clone();
+        status.apply(update);
+        if status != self.session_status {
+            self.session_status = status.clone();
+            self.event_proxy.send_event(
+                RioEvent::SessionStatus(self.route_id, status),
+                self.window_id,
+            );
+        }
     }
 
     fn set_current_directory(&mut self, path: std::path::PathBuf) {

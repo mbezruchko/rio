@@ -12,7 +12,7 @@ use cursor_icon::CursorIcon;
 use crate::ansi::CursorShape;
 use crate::config::colors::{ColorRgb, NamedColor};
 use crate::crosswords::square::Hyperlink;
-use crate::event::{ProgressReport, ProgressState};
+use crate::event::{ProgressReport, ProgressState, SessionStatusUpdate};
 use crate::simd_utf8;
 
 /// Either a concrete color value or a query for the current value.
@@ -383,6 +383,37 @@ pub(super) fn parse_progress_report(params: &[&[u8]]) -> Option<ProgressReport> 
         None
     };
     Some(ProgressReport { state, progress })
+}
+
+/// OSC 21337 (iTerm2 Session Status): `key=value` pairs for `status`,
+/// `indicator` and `status-color`. An empty value clears that field;
+/// unknown keys and malformed colors are ignored.
+pub(super) fn parse_session_status(params: &[&[u8]]) -> Option<SessionStatusUpdate> {
+    let mut update = SessionStatusUpdate::default();
+    for param in params.get(1..)? {
+        let Some((key, value)) = simd_utf8::from_utf8_fast(param)
+            .ok()
+            .and_then(|param| param.split_once('='))
+        else {
+            continue;
+        };
+        let color = || {
+            if value.is_empty() {
+                Some(None)
+            } else {
+                xparse_color(value.as_bytes()).map(Some)
+            }
+        };
+        match key {
+            "status" => {
+                update.status = Some((!value.is_empty()).then(|| value.to_string()))
+            }
+            "indicator" => update.indicator = color().or(update.indicator),
+            "status-color" => update.status_color = color().or(update.status_color),
+            _ => {}
+        }
+    }
+    Some(update)
 }
 
 /// Rejoin `params[from..]` with the `;` the OSC parser split on, so a
@@ -767,5 +798,47 @@ mod tests {
             term.current_directory.as_deref(),
             Some(std::path::Path::new("/home/My Files"))
         );
+    }
+
+    fn status(payload: &str) -> Option<SessionStatusUpdate> {
+        let params: Vec<&[u8]> = payload.split(';').map(str::as_bytes).collect();
+        parse_session_status(&params)
+    }
+
+    #[test]
+    fn session_status_sets_clears_and_keeps_fields() {
+        let orange = ColorRgb {
+            r: 0xff,
+            g: 0xa5,
+            b: 0x00,
+        };
+        let update = status("21337;status=Working;indicator=#ffa500").unwrap();
+        assert_eq!(update.status, Some(Some("Working".to_string())));
+        assert_eq!(update.indicator, Some(Some(orange)));
+        // Left out: unchanged.
+        assert_eq!(update.status_color, None);
+
+        // Empty values clear; `rgb:` colors parse too.
+        let update =
+            status("21337;status=;indicator=;status-color=rgb:ff/a5/00").unwrap();
+        assert_eq!(update.status, Some(None));
+        assert_eq!(update.indicator, Some(None));
+        assert_eq!(update.status_color, Some(Some(orange)));
+
+        // Unknown keys and malformed colors are ignored.
+        let update = status("21337;detail=x;indicator=orange").unwrap();
+        assert_eq!(update, SessionStatusUpdate::default());
+    }
+
+    #[test]
+    fn session_status_updates_merge() {
+        let mut current = crate::event::SessionStatus::default();
+        current.apply(status("21337;status=Working;indicator=#ffa500").unwrap());
+        current.apply(status("21337;status=Done").unwrap());
+        assert_eq!(current.status.as_deref(), Some("Done"));
+        assert!(current.indicator.is_some());
+
+        current.apply(status("21337;status=;indicator=").unwrap());
+        assert!(current.is_empty());
     }
 }

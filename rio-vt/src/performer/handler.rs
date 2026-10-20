@@ -415,6 +415,9 @@ pub trait Handler {
     /// Set progress bar report (OSC 9;4).
     fn set_progress_report(&mut self, _: crate::event::ProgressReport) {}
 
+    /// Update the session status (OSC 21337).
+    fn set_session_status(&mut self, _: crate::event::SessionStatusUpdate) {}
+
     /// Report current keyboard mode.
     fn report_keyboard_mode(&mut self) {}
 
@@ -1255,6 +1258,12 @@ impl<U: Handler> Perform for Performer<'_, U> {
             b"110" => self.handler.reset_color(NamedColor::Foreground as usize),
             b"111" => self.handler.reset_color(NamedColor::Background as usize),
             b"112" => self.handler.reset_color(NamedColor::Cursor as usize),
+
+            // OSC 21337 - iTerm2 session status (tab subtitle and dot).
+            b"21337" => match osc::parse_session_status(params) {
+                Some(update) => self.handler.set_session_status(update),
+                None => unhandled(params),
+            },
 
             // OSC 1337 - iTerm2 user vars and inline image protocol.
             b"1337" => {

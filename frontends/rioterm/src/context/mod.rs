@@ -59,6 +59,10 @@ pub struct Context<T: EventListener> {
     /// An OSC title change arrived while this pane was hidden: the
     /// render was skipped and must run when the pane surfaces.
     pub title_dirty: bool,
+    /// OSC 21337 status, mirrored from the terminal for the tab strip.
+    pub session_status: rio_backend::event::SessionStatus,
+    /// Active OSC 9;4 progress, for flat tabs' per-tab progress line.
+    pub progress: Option<rio_backend::event::ProgressReport>,
     /// Display name of the command this pane spawned (the configured
     /// shell or program), fixed for the pane's lifetime. Fills
     /// `{{ program }}` and the empty-title strip fallback without ever
@@ -217,6 +221,8 @@ pub fn create_dead_context<T: rio_backend::event::EventListener>(
         dimension,
         title: ContextTitle::default(),
         title_dirty: false,
+        session_status: Default::default(),
+        progress: None,
         spawned_program: String::new(),
         _io_thread: None,
     }
@@ -413,6 +419,8 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             dimension,
             title: ContextTitle::default(),
             title_dirty: false,
+            session_status: Default::default(),
+            progress: None,
             spawned_program: spawned_program_name(config),
             _io_thread: io_thread,
         };
@@ -878,6 +886,66 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         self.contexts
             .iter_mut()
             .position(|grid| grid.get_by_route_id(route_id).is_some())
+    }
+
+    fn pane_mut(&mut self, route_id: usize) -> Option<&mut Context<T>> {
+        self.contexts
+            .iter_mut()
+            .find_map(|grid| grid.get_by_route_id(route_id))
+            .map(|item| item.context_mut())
+    }
+
+    /// A pane's OSC 21337 status changed. Returns whether the pane is in
+    /// this window (the strip must repaint).
+    pub fn set_session_status(
+        &mut self,
+        route_id: usize,
+        status: rio_backend::event::SessionStatus,
+    ) -> bool {
+        self.pane_mut(route_id)
+            .map(|context| context.session_status = status)
+            .is_some()
+    }
+
+    /// A pane reported OSC 9;4 progress. Returns whether the pane is in
+    /// this window (the strip must repaint).
+    pub fn set_progress(
+        &mut self,
+        route_id: usize,
+        report: rio_backend::event::ProgressReport,
+    ) -> bool {
+        let active = report.state != rio_backend::event::ProgressState::Remove;
+        self.pane_mut(route_id)
+            .map(|context| context.progress = active.then_some(report))
+            .is_some()
+    }
+
+    /// Status a tab shows: its focused pane's, else the first pane in it
+    /// that has one (an agent running in a background split).
+    pub fn tab_session_status(
+        &self,
+        index: usize,
+    ) -> Option<&rio_backend::event::SessionStatus> {
+        let grid = self.contexts.get(index)?;
+        let current = &grid.current().session_status;
+        if !current.is_empty() {
+            return Some(current);
+        }
+        grid.contexts()
+            .values()
+            .map(|item| &item.val.session_status)
+            .find(|status| !status.is_empty())
+    }
+
+    /// Progress a tab shows, picked like `tab_session_status`.
+    pub fn tab_progress(
+        &self,
+        index: usize,
+    ) -> Option<rio_backend::event::ProgressReport> {
+        let grid = self.contexts.get(index)?;
+        grid.current()
+            .progress
+            .or_else(|| grid.contexts().values().find_map(|item| item.val.progress))
     }
 
     /// A pane rang the bell. Flags its tab so the strip can surface it.
@@ -1554,6 +1622,41 @@ pub fn process_open_url(
 pub mod test {
     use super::*;
     use crate::event::VoidListener;
+
+    #[test]
+    fn session_status_and_progress_reach_their_tab() {
+        use rio_backend::event::{ProgressReport, ProgressState, SessionStatus};
+
+        let mut cm =
+            ContextManager::start_with_capacity(5, VoidListener {}, WindowId::from(0))
+                .unwrap();
+        let route = cm.current().route_id;
+        assert!(cm.tab_session_status(0).is_none());
+
+        let working = SessionStatus {
+            status: Some("working".to_string()),
+            ..SessionStatus::default()
+        };
+        assert!(cm.set_session_status(route, working.clone()));
+        assert_eq!(cm.tab_session_status(0), Some(&working));
+        // A pane from another window is not ours.
+        assert!(!cm.set_session_status(usize::MAX, working));
+
+        let indeterminate = ProgressReport {
+            state: ProgressState::Indeterminate,
+            progress: None,
+        };
+        cm.set_progress(route, indeterminate);
+        assert_eq!(cm.tab_progress(0), Some(indeterminate));
+        cm.set_progress(
+            route,
+            ProgressReport {
+                state: ProgressState::Remove,
+                progress: None,
+            },
+        );
+        assert_eq!(cm.tab_progress(0), None);
+    }
 
     #[test]
     fn test_capacity() {

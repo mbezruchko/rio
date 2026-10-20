@@ -770,8 +770,25 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     }
                 }
             }
-            RioEventType::Rio(RioEvent::ProgressReport(report)) => {
+            RioEventType::Rio(RioEvent::SessionStatus(route_id, status)) => {
                 if let Some(route) = self.router.routes.get_mut(&window_id) {
+                    if route
+                        .window
+                        .screen
+                        .context_manager
+                        .set_session_status(route_id, status)
+                    {
+                        route.request_overlay_redraw();
+                    }
+                }
+            }
+            RioEventType::Rio(RioEvent::ProgressReport(route_id, report)) => {
+                if let Some(route) = self.router.routes.get_mut(&window_id) {
+                    route
+                        .window
+                        .screen
+                        .context_manager
+                        .set_progress(route_id, report);
                     if let Some(island) = &mut route.window.screen.renderer.island {
                         island.set_progress_report(report);
                         route.request_overlay_redraw();

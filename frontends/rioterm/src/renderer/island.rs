@@ -95,6 +95,18 @@ const FLAT_SEPARATOR_WIDTH: f32 = 1.0;
 // Underline marking the active tab (light over any fill on dark themes).
 const FLAT_ACTIVE_INDICATOR_HEIGHT: f32 = 2.0;
 const NEW_TAB_BUTTON_WIDTH: f32 = 32.0;
+// Session status (OSC 21337): subtitle under the title, dot by the hint.
+const FLAT_SUBTITLE_FONT_SIZE: f32 = 10.0;
+const FLAT_STATUS_DOT_SIZE: f32 = 7.0;
+const FLAT_STATUS_DOT_GAP: f32 = 8.0;
+// Extra title padding per side when a status dot sits by the hint.
+const FLAT_STATUS_DOT_RESERVE: f32 = 16.0;
+// Per-tab OSC 9;4 progress line along the tab's top edge.
+const FLAT_PROGRESS_HEIGHT: f32 = 2.0;
+// Indeterminate progress: a segment this share of the tab wide sweeps
+// across it once per period (seconds).
+const FLAT_PROGRESS_SEGMENT: f32 = 0.35;
+const FLAT_PROGRESS_PERIOD: f32 = 1.6;
 // The `⌥⌘N` window label right of the traffic lights.
 #[cfg(target_os = "macos")]
 const FLAT_WINDOW_LABEL_WIDTH: f32 = 52.0;
@@ -285,6 +297,46 @@ fn flat_fills(bg: [f32; 4]) -> FlatFills {
         separator,
         indicator,
     }
+}
+
+#[inline]
+fn rgb_color(color: rio_backend::config::colors::ColorRgb) -> [f32; 4] {
+    [
+        color.r as f32 / 255.0,
+        color.g as f32 / 255.0,
+        color.b as f32 / 255.0,
+        1.0,
+    ]
+}
+
+/// The sliding segment of an indeterminate progress line at `seconds`:
+/// it eases in from the left edge, across the tab and off the right edge
+/// once per `FLAT_PROGRESS_PERIOD`. Returns its left edge and width,
+/// clipped to the tab.
+fn indeterminate_segment(left: f32, width: f32, seconds: f32) -> (f32, f32) {
+    let segment = width * FLAT_PROGRESS_SEGMENT;
+    let phase = (seconds / FLAT_PROGRESS_PERIOD).fract();
+    let eased = phase * phase * (3.0 - 2.0 * phase);
+    let start = left - segment + eased * (width + segment);
+    let x0 = start.max(left);
+    let x1 = (start + segment).min(left + width);
+    (x0, (x1 - x0).max(0.0))
+}
+
+/// Share of the tab width and color of a tab's OSC 9;4 progress line.
+fn progress_line(report: ProgressReport) -> (f32, [f32; 4]) {
+    let fraction = match report.state {
+        ProgressState::Indeterminate => 1.0,
+        _ => report
+            .progress
+            .map_or(1.0, |p| f32::from(p.min(100)) / 100.0),
+    };
+    let color = match report.state {
+        ProgressState::Error => [0.96, 0.33, 0.30, 1.0],
+        ProgressState::Pause => [0.98, 0.78, 0.25, 1.0],
+        _ => [0.30, 0.85, 0.39, 1.0],
+    };
+    (fraction, color)
 }
 
 /// Text color for a tab drawn over `fill`: dark on light, light on dark.
@@ -588,6 +640,11 @@ pub struct Island {
     /// Tab under the cursor; flat tabs show their close button only
     /// while hovered.
     hover_tab: Option<usize>,
+    /// A flat tab drew an indeterminate progress line last frame, so the
+    /// sweep needs frames (`needs_redraw`).
+    tab_progress_animating: bool,
+    /// Clock for the indeterminate sweep.
+    progress_epoch: Instant,
 }
 
 impl Island {
@@ -622,6 +679,8 @@ impl Island {
             last_anim_frame: Instant::now(),
             close_hover: false,
             hover_tab: None,
+            tab_progress_animating: false,
+            progress_epoch: Instant::now(),
         }
     }
 
@@ -698,6 +757,7 @@ impl Island {
         // only moves on CursorMoved (which requests its own redraws);
         // only the slide springs animate between input events.
         matches!(self.progress_state, Some(ProgressState::Indeterminate))
+            || self.tab_progress_animating
             || !self.slide_springs.is_empty()
     }
 
@@ -1122,6 +1182,8 @@ impl Island {
             }
         }
 
+        let mut tab_progress_animating = false;
+
         // Render each tab
         for tab_index in 0..num_tabs {
             // The dragged tab floats — drawn after the loop instead.
@@ -1201,10 +1263,27 @@ impl Island {
             let bell = context_manager.bell(tab_index);
             let bell_width = if bell { BELL_DOT_SIZE + BELL_GAP } else { 0.0 };
 
+            // Flat tabs show a pane's OSC 21337 status: a subtitle under
+            // the title and a dot by the shortcut hint.
+            let session_status = if flat && !single {
+                context_manager.tab_session_status(tab_index).cloned()
+            } else {
+                None
+            };
+            let subtitle = session_status.as_ref().and_then(|s| s.status.clone());
+            let dot_reserve = if session_status
+                .as_ref()
+                .is_some_and(|s| s.indicator.is_some())
+            {
+                FLAT_STATUS_DOT_RESERVE
+            } else {
+                0.0
+            };
+
             let max_text_width = if single {
                 single_title_budget(window_width, scale_factor, left_margin) - bell_width
             } else {
-                tab_width - title_padding * 2.0 - bell_width
+                tab_width - (title_padding + dot_reserve) * 2.0 - bell_width
             }
             .max(0.0);
             let title = fit_title_to_width(sugarloaf, &raw_title, max_text_width);
@@ -1230,7 +1309,13 @@ impl Island {
                 } else {
                     tab_x + (tab_width - text_width) / 2.0
                 };
-                let text_y = (ISLAND_HEIGHT / 2.0) - (TITLE_FONT_SIZE / 2.);
+                // A subtitle lifts the title so the pair stays centred.
+                let text_y = if subtitle.is_some() {
+                    (ISLAND_HEIGHT - TITLE_FONT_SIZE - FLAT_SUBTITLE_FONT_SIZE) / 2.0
+                        - 1.0
+                } else {
+                    (ISLAND_HEIGHT / 2.0) - (TITLE_FONT_SIZE / 2.)
+                };
                 if bell {
                     // Centered on the title's lowercase body, not the strip:
                     // the em box hangs from `text_y` with its optical middle
@@ -1256,6 +1341,29 @@ impl Island {
                     &title,
                     &title_opts,
                 );
+
+                if let Some(subtitle) = &subtitle {
+                    let color = session_status
+                        .as_ref()
+                        .and_then(|s| s.status_color)
+                        .map(rgb_color)
+                        .unwrap_or([text_color[0], text_color[1], text_color[2], 0.7]);
+                    let opts = DrawOpts {
+                        font_size: FLAT_SUBTITLE_FONT_SIZE,
+                        color: color_u8(color),
+                        ..DrawOpts::default()
+                    };
+                    let subtitle =
+                        fit_title_to_width(sugarloaf, subtitle, max_text_width);
+                    let ui = sugarloaf.text_mut();
+                    let width = ui.measure(&subtitle, &opts);
+                    ui.draw(
+                        tab_x + (tab_width - width) / 2.0,
+                        text_y + TITLE_FONT_SIZE + 2.0,
+                        &subtitle,
+                        &opts,
+                    );
+                }
             }
 
             // Nothing is drawn behind a lone title.
@@ -1317,17 +1425,55 @@ impl Island {
                         1,
                     );
                 }
+                if let Some(report) = context_manager.tab_progress(tab_index) {
+                    let (fraction, color) = progress_line(report);
+                    let (x, width) = if report.state == ProgressState::Indeterminate {
+                        tab_progress_animating = true;
+                        indeterminate_segment(
+                            tab_x,
+                            tab_width,
+                            self.progress_epoch.elapsed().as_secs_f32(),
+                        )
+                    } else {
+                        (tab_x, tab_width * fraction)
+                    };
+                    sugarloaf.rect(
+                        None,
+                        x,
+                        0.0,
+                        width,
+                        FLAT_PROGRESS_HEIGHT,
+                        color,
+                        0.0,
+                        1,
+                    );
+                }
+                let mut hint_left = tab_x + tab_width - FLAT_HINT_MARGIN_RIGHT;
                 if cfg!(target_os = "macos") && !hidden_by_drag {
                     if let Some(digit) = shortcut_digit(tab_index, num_tabs) {
-                        draw_shortcut(
+                        hint_left = draw_shortcut(
                             sugarloaf,
-                            Anchor::Right(tab_x + tab_width - FLAT_HINT_MARGIN_RIGHT),
+                            Anchor::Right(hint_left),
                             "⌘",
                             digit,
                             text_color,
                             false,
-                        );
+                        ) - FLAT_STATUS_DOT_GAP;
                     }
+                }
+                if let Some(indicator) = session_status.as_ref().and_then(|s| s.indicator)
+                {
+                    sugarloaf.rounded_rect(
+                        None,
+                        hint_left - FLAT_STATUS_DOT_SIZE,
+                        (ISLAND_HEIGHT - FLAT_STATUS_DOT_SIZE) / 2.0,
+                        FLAT_STATUS_DOT_SIZE,
+                        FLAT_STATUS_DOT_SIZE,
+                        rgb_color(indicator),
+                        0.0,
+                        FLAT_STATUS_DOT_SIZE / 2.0,
+                        1,
+                    );
                 }
                 // Like iTerm2, the close button only shows on the hovered tab.
                 if self.hover_tab == Some(tab_index) && !hidden_by_drag {
@@ -1473,8 +1619,18 @@ impl Island {
             }
         }
 
-        // Render the progress bar below the island
-        self.render_progress_bar(sugarloaf, window_width, scale_factor, ISLAND_HEIGHT);
+        self.tab_progress_animating = tab_progress_animating;
+
+        // Render the progress bar below the island. Flat tabs draw
+        // progress on the tab that reported it instead.
+        if !(flat && num_tabs > 1) {
+            self.render_progress_bar(
+                sugarloaf,
+                window_width,
+                scale_factor,
+                ISLAND_HEIGHT,
+            );
+        }
     }
 
     /// Toggle the color picker for a given tab index
@@ -2352,6 +2508,35 @@ mod tests {
         assert!(on_orange[0] > 0.95 && on_orange[2] > 0.8 && on_orange[0] > on_orange[2]);
         // Light themes get a dark underline instead.
         assert!(flat_fills([0.98, 0.98, 0.98, 1.0]).indicator[0] < 0.5);
+    }
+
+    #[test]
+    fn progress_line_follows_state() {
+        let report = |state, progress| ProgressReport { state, progress };
+        let (full, green) = progress_line(report(ProgressState::Indeterminate, None));
+        assert_eq!(full, 1.0);
+        assert!(green[1] > green[0]);
+        assert_eq!(progress_line(report(ProgressState::Set, Some(40))).0, 0.4);
+        let (_, red) = progress_line(report(ProgressState::Error, Some(100)));
+        assert!(red[0] > red[1]);
+    }
+
+    #[test]
+    fn indeterminate_segment_sweeps_across_the_tab() {
+        let (left, width) = (100.0, 200.0);
+        // Starts hidden at the left edge and ends past the right one.
+        assert_eq!(indeterminate_segment(left, width, 0.0).1, 0.0);
+        let end = indeterminate_segment(left, width, FLAT_PROGRESS_PERIOD * 0.999);
+        assert!(end.1 < 1.0);
+        // Mid-sweep: a full segment, inside the tab.
+        let (x, w) = indeterminate_segment(left, width, FLAT_PROGRESS_PERIOD * 0.5);
+        assert!((w - width * FLAT_PROGRESS_SEGMENT).abs() < 0.01);
+        assert!(x >= left && x + w <= left + width);
+        // Never leaves the tab.
+        for i in 0..50 {
+            let (x, w) = indeterminate_segment(left, width, i as f32 * 0.07);
+            assert!(x >= left && x + w <= left + width + 0.001);
+        }
     }
 
     #[test]
