@@ -120,6 +120,8 @@ pub struct ContextManagerConfig {
     pub working_dir: Option<String>,
     pub spawn_performer: bool,
     pub cwd: bool,
+    /// `navigation.split_cwd()`: like `cwd`, for new splits.
+    pub split_cwd: bool,
     pub is_native: bool,
     pub split_color: [f32; 4],
     pub split_active_color: [f32; 4],
@@ -1217,7 +1219,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         sugarloaf: &mut Sugarloaf,
     ) {
         let mut working_dir = self.config.working_dir.clone();
-        if self.config.cwd {
+        if self.config.split_cwd {
             #[cfg(not(target_os = "windows"))]
             {
                 let current_context = self.current();
@@ -1290,6 +1292,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             #[cfg(test)]
             dead_pty: false,
             cwd: config.navigation.current_working_directory,
+            split_cwd: config.navigation.split_cwd(),
             shell,
             working_dir,
             spawn_performer: true,

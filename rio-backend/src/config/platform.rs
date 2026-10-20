@@ -92,6 +92,11 @@ pub struct PlatformNavigation {
     pub clickable: Option<bool>,
     #[serde(default = "Option::default", rename = "current-working-directory")]
     pub current_working_directory: Option<bool>,
+    #[serde(
+        default = "Option::default",
+        rename = "split-current-working-directory"
+    )]
+    pub split_current_working_directory: Option<bool>,
     #[serde(default = "Option::default", rename = "use-terminal-title")]
     pub use_terminal_title: Option<bool>,
     #[serde(default = "Option::default", rename = "hide-if-single")]

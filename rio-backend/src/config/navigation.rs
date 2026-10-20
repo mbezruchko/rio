@@ -148,6 +148,14 @@ pub struct Navigation {
         alias = "cwd"
     )]
     pub current_working_directory: bool,
+    /// Reuse the current path for new splits. Unset follows
+    /// `current-working-directory`, so setting it lets splits and tabs
+    /// differ (e.g. splits stay in place, tabs open in `working-dir`).
+    #[serde(
+        default = "Option::default",
+        rename = "split-current-working-directory"
+    )]
+    pub split_current_working_directory: Option<bool>,
     #[serde(default = "bool::default", rename = "use-terminal-title")]
     pub use_terminal_title: bool,
     #[serde(default = "default_hide_if_single", rename = "hide-if-single")]
@@ -192,6 +200,7 @@ impl Default for Navigation {
             color_automation: Vec::default(),
             clickable: false,
             current_working_directory: true,
+            split_current_working_directory: None,
             use_terminal_title: false,
             hide_if_single: default_hide_if_single(),
             use_split: true,
@@ -205,6 +214,13 @@ impl Default for Navigation {
 }
 
 impl Navigation {
+    /// Whether new splits start in the current pane's directory.
+    #[inline]
+    pub fn split_cwd(&self) -> bool {
+        self.split_current_working_directory
+            .unwrap_or(self.current_working_directory)
+    }
+
     #[inline]
     pub fn is_native(&self) -> bool {
         #[cfg(target_os = "macos")]
@@ -346,6 +362,24 @@ mod tests {
         let on =
             toml::from_str::<Root>("[navigation]\nfocus-follows-mouse = true\n").unwrap();
         assert!(on.navigation.focus_follows_mouse);
+    }
+
+    #[test]
+    fn split_cwd_follows_tabs_unless_set() {
+        let default = toml::from_str::<Root>("[navigation]\nmode = 'Tab'\n").unwrap();
+        assert!(default.navigation.split_cwd());
+
+        let tabs_off =
+            toml::from_str::<Root>("[navigation]\ncurrent-working-directory = false\n")
+                .unwrap();
+        assert!(!tabs_off.navigation.split_cwd());
+
+        let split_only = toml::from_str::<Root>(
+            "[navigation]\ncurrent-working-directory = false\nsplit-current-working-directory = true\n",
+        )
+        .unwrap();
+        assert!(!split_only.navigation.current_working_directory);
+        assert!(split_only.navigation.split_cwd());
     }
 
     #[test]

@@ -595,6 +595,10 @@ impl Config {
             if let Some(cwd) = navigation_overwrite.current_working_directory {
                 self.navigation.current_working_directory = cwd;
             }
+            if let Some(split_cwd) = navigation_overwrite.split_current_working_directory
+            {
+                self.navigation.split_current_working_directory = Some(split_cwd);
+            }
             if let Some(use_term_title) = navigation_overwrite.use_terminal_title {
                 self.navigation.use_terminal_title = use_term_title;
             }

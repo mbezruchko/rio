@@ -250,6 +250,7 @@ impl Screen<'_> {
             #[cfg(test)]
             dead_pty: false,
             cwd: config.navigation.current_working_directory,
+            split_cwd: config.navigation.split_cwd(),
             shell,
             working_dir,
             spawn_performer: true,
