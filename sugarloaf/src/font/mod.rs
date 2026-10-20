@@ -887,6 +887,8 @@ impl FontLibraryData {
     pub fn load(&mut self, mut spec: SugarloafFonts) -> Vec<SugarloafFont> {
         // Configure hinting through spec
         self.hinting = spec.hinting;
+        #[cfg(target_os = "macos")]
+        crate::font::macos::set_thicken(spec.thicken);
         self.features = Arc::new(
             spec.features
                 .as_deref()

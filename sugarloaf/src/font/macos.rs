@@ -8,6 +8,7 @@
 //! caller stitches this into the existing atlas pipeline unchanged.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use core_foundation::{
     attributed_string::CFMutableAttributedString,
@@ -45,6 +46,16 @@ use core_text::{
 // CGImage.h. Used for 1-channel alpha-only bitmaps (monochrome glyph masks).
 #[allow(non_upper_case_globals)]
 const kCGImageAlphaOnly: u32 = 7;
+
+/// `fonts.thicken`, set by `FontLibraryData::load`. Process-wide like the
+/// rasterizer itself; a change reloads the font library, which drops the
+/// glyph atlases rasterized with the old value.
+static THICKEN: AtomicBool = AtomicBool::new(true);
+
+#[inline]
+pub fn set_thicken(thicken: bool) {
+    THICKEN.store(thicken, Ordering::Relaxed);
+}
 
 // core-text 21 leaves CTFontManagerRegisterFontsForURL commented out, so declare
 // the FFI ourselves. Used to publish `additional_dirs` fonts to CoreText so
@@ -569,7 +580,9 @@ pub fn rasterize_glyph(
 
     cx.set_should_antialias(true);
     cx.set_allows_antialiasing(true);
-    cx.set_should_smooth_fonts(true);
+    // Font smoothing makes CoreText dilate stems in this alpha-only
+    // context; off keeps the outline's natural weight.
+    cx.set_should_smooth_fonts(THICKEN.load(Ordering::Relaxed));
     cx.set_gray_fill_color(0.0, 1.0);
     // Synthetic bold via fill+stroke. Line width scales with size
     // (1/14 of points, floored at 1 device pixel) so bold weight looks

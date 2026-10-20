@@ -134,6 +134,10 @@ pub struct SugarloafFonts {
     pub size: f32,
     #[serde(default = "default_bool_true")]
     pub hinting: bool,
+    /// macOS: CoreText font smoothing, which dilates glyph stems. `false`
+    /// draws thinner strokes (iTerm2's "thin strokes", Ghostty's default).
+    #[serde(default = "default_bool_true")]
+    pub thicken: bool,
     #[serde(default = "Option::default")]
     pub features: Option<Vec<String>>,
     #[serde(default = "Option::default")]
@@ -171,6 +175,7 @@ impl Default for SugarloafFonts {
         SugarloafFonts {
             features: None,
             hinting: true,
+            thicken: true,
             size: default_font_size(),
             family: None,
             regular: SugarloafFont::default(),
