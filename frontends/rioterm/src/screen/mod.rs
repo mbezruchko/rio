@@ -486,6 +486,23 @@ impl Screen<'_> {
         false
     }
 
+    /// `navigation.focus-follows-mouse`: focus the panel under the pointer
+    /// on hover. Unlike the click path, the target panel's selection is
+    /// kept — the next click there reaches `on_left_click` normally, so
+    /// there is no stale anchor to drop.
+    #[inline]
+    pub fn focus_panel_under_mouse(&mut self) -> bool {
+        if self
+            .context_manager
+            .current_grid_mut()
+            .select_current_based_on_mouse(&self.mouse)
+        {
+            self.context_manager.select_route_from_current_grid();
+            return true;
+        }
+        false
+    }
+
     #[inline]
     pub fn mouse_position(&self, display_offset: usize) -> Pos {
         let current_grid = self.context_manager.current_grid();

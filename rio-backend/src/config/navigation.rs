@@ -178,6 +178,11 @@ pub struct Navigation {
     /// when few are open. Clamped to `[80.0, 280.0]` at load time.
     #[serde(default = "default_max_tab_width", rename = "max-tab-width")]
     pub max_tab_width: f32,
+    /// Focus the split under the mouse pointer without clicking. Off by
+    /// default; hovering never switches panels while a mouse button is
+    /// held, so drags and selections stay in the panel they started in.
+    #[serde(default = "bool::default", rename = "focus-follows-mouse")]
+    pub focus_follows_mouse: bool,
 }
 
 impl Default for Navigation {
@@ -194,6 +199,7 @@ impl Default for Navigation {
             unfocused_split_fill: None,
             open_config_with_split: true,
             max_tab_width: default_max_tab_width(),
+            focus_follows_mouse: false,
         }
     }
 }
@@ -329,6 +335,17 @@ mod tests {
         .unwrap();
         assert!(!off.navigation.hide_if_single);
         assert!(off.navigation.island_visible(1));
+    }
+
+    #[test]
+    fn focus_follows_mouse() {
+        let default = toml::from_str::<Root>("[navigation]\nmode = 'Tab'\n").unwrap();
+        assert!(!default.navigation.focus_follows_mouse);
+        assert!(!Navigation::default().focus_follows_mouse);
+
+        let on =
+            toml::from_str::<Root>("[navigation]\nfocus-follows-mouse = true\n").unwrap();
+        assert!(on.navigation.focus_follows_mouse);
     }
 
     #[test]

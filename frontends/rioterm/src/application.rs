@@ -1879,6 +1879,20 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 let rmb_pressed =
                     route.window.screen.mouse.right_button_state == ElementState::Pressed;
 
+                // Focus follows mouse: hovering a split focuses it. Skipped
+                // while any button is held so a drag or selection stays in
+                // the panel it started in. Runs before `mouse_position`
+                // below, which resolves the cell against the current panel.
+                if self.config.navigation.focus_follows_mouse
+                    && !lmb_pressed
+                    && !rmb_pressed
+                    && route.window.screen.mouse.middle_button_state
+                        != ElementState::Pressed
+                    && route.window.screen.focus_panel_under_mouse()
+                {
+                    route.request_redraw();
+                }
+
                 let has_selection = !route.window.screen.selection_is_empty();
                 if has_selection && (lmb_pressed || rmb_pressed) {
                     // Only start the timer when the mouse enters the scroll

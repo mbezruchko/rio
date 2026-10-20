@@ -613,6 +613,9 @@ impl Config {
             if let Some(max_tab_width) = navigation_overwrite.max_tab_width {
                 self.navigation.max_tab_width = max_tab_width;
             }
+            if let Some(focus_follows_mouse) = navigation_overwrite.focus_follows_mouse {
+                self.navigation.focus_follows_mouse = focus_follows_mouse;
+            }
         }
 
         // Clamp after platform merge so both the base and any override go
@@ -1509,6 +1512,7 @@ mod tests {
 
             [platform]
             macos.navigation.mode = "NativeTab"
+            macos.navigation.focus-follows-mouse = true
         "#,
         );
 
@@ -1519,6 +1523,7 @@ mod tests {
             result.navigation.mode,
             navigation::NavigationMode::NativeTab
         );
+        assert!(result.navigation.focus_follows_mouse);
         // Clickable should be preserved
         assert!(result.navigation.clickable);
     }
