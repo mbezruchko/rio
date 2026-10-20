@@ -110,6 +110,45 @@ pub struct Screen<'screen> {
     pub grid_rasterizer: rio_grid::GridGlyphRasterizer,
 }
 
+/// `key` in the form `trigger` is stored in, for binding lookups.
+fn binding_key_for(
+    trigger: &BindingKey,
+    key: &rio_window::event::KeyEvent,
+    mods: ModifiersState,
+) -> BindingKey {
+    // We don't want the key without modifier, because it means something else most of
+    // the time. However what we want is to manually lowercase the character to account
+    // for both small and capital letters on regular characters at the same time.
+    let logical_key = if let Key::Character(ch) = key.logical_key.as_ref() {
+        // Match `Alt` bindings without `Alt` being applied, otherwise they use the
+        // composed chars, which are not intuitive to bind.
+        //
+        // On Windows, the `Ctrl + Alt` mangles `logical_key` to unidentified values, thus
+        // preventing them from being used in bindings
+        //
+        // For more see https://github.com/rust-windowing/winit/issues/2945.
+        // if (cfg!(target_os = "macos") || (cfg!(windows) && mods.control_key()))
+        // && mods.alt_key()
+        if (mods.shift_key() || mods.alt_key())
+            || mods.alt_key() && (cfg!(windows) && mods.control_key())
+        {
+            key.key_without_modifiers()
+        } else {
+            Key::Character(ch.to_lowercase().into())
+        }
+    } else {
+        key.logical_key.clone()
+    };
+
+    match (trigger, logical_key) {
+        (BindingKey::Scancode(_), _) => BindingKey::Scancode(key.physical_key),
+        (_, code) => BindingKey::Keycode {
+            key: code,
+            location: key.location,
+        },
+    }
+}
+
 pub struct ChromePress {
     window_origin: Option<rio_window::dpi::PhysicalPosition<i32>>,
     at: std::time::Instant,
@@ -1071,40 +1110,8 @@ impl Screen<'_> {
 
         for i in 0..self.bindings.len() {
             let binding = &self.bindings[i];
-            let trigger = &binding.trigger;
             let action = binding.action.clone();
-
-            // We don't want the key without modifier, because it means something else most of
-            // the time. However what we want is to manually lowercase the character to account
-            // for both small and capital letters on regular characters at the same time.
-            let logical_key = if let Key::Character(ch) = key.logical_key.as_ref() {
-                // Match `Alt` bindings without `Alt` being applied, otherwise they use the
-                // composed chars, which are not intuitive to bind.
-                //
-                // On Windows, the `Ctrl + Alt` mangles `logical_key` to unidentified values, thus
-                // preventing them from being used in bindings
-                //
-                // For more see https://github.com/rust-windowing/winit/issues/2945.
-                // if (cfg!(target_os = "macos") || (cfg!(windows) && mods.control_key()))
-                // && mods.alt_key()
-                if (mods.shift_key() || mods.alt_key())
-                    || mods.alt_key() && (cfg!(windows) && mods.control_key())
-                {
-                    key.key_without_modifiers()
-                } else {
-                    Key::Character(ch.to_lowercase().into())
-                }
-            } else {
-                key.logical_key.clone()
-            };
-
-            let key_match = match (&trigger, logical_key) {
-                (BindingKey::Scancode(_), _) => BindingKey::Scancode(key.physical_key),
-                (_, code) => BindingKey::Keycode {
-                    key: code,
-                    location: key.location,
-                },
-            };
+            let key_match = binding_key_for(&binding.trigger, key, mods);
 
             if binding.is_triggered_by(binding_mode.to_owned(), mods, &key_match) {
                 *ignore_chars.get_or_insert(true) &= action != Act::ReceiveChar;
@@ -1748,6 +1755,29 @@ impl Screen<'_> {
             context_manager.add_context(true, rich_text_id)
         });
         self.cancel_search(clipboard);
+    }
+
+    /// The arrangement action (save or restore) bound to `key`, if any.
+    /// The palette swallows keys while open; this lets those bindings
+    /// switch it between its two arrangement modes.
+    pub fn arrangement_action_for(
+        &self,
+        key: &rio_window::event::KeyEvent,
+    ) -> Option<Act> {
+        let mods = self.modifiers.state();
+        self.bindings
+            .iter()
+            .filter(|binding| {
+                matches!(
+                    binding.action,
+                    Act::SaveArrangement | Act::RestoreArrangement
+                )
+            })
+            .find(|binding| {
+                binding.mods == mods
+                    && binding.trigger == binding_key_for(&binding.trigger, key, mods)
+            })
+            .map(|binding| binding.action.clone())
     }
 
     /// This window as a saved arrangement: tabs, split trees and pane

@@ -292,6 +292,21 @@ impl Route<'_> {
 
             Modal::CommandPalette => {
                 if key_event.state == ElementState::Pressed {
+                    // The save / restore arrangement bindings switch the
+                    // open palette between its two arrangement modes.
+                    if let Some(action) =
+                        self.window.screen.arrangement_action_for(key_event)
+                    {
+                        let names = crate::arrangement::list();
+                        let palette = &mut self.window.screen.renderer.command_palette;
+                        if action == crate::bindings::Action::RestoreArrangement {
+                            palette.enter_arrangements_mode(names);
+                        } else {
+                            palette.enter_save_arrangement_mode(names);
+                        }
+                        self.request_overlay_redraw();
+                        return true;
+                    }
                     match &key_event.logical_key {
                         Key::Named(NamedKey::Escape) => {
                             self.window
@@ -474,21 +489,64 @@ impl Route<'_> {
                             }
                             self.request_overlay_redraw();
                         }
+                        // Text-field erase: Option a word, Cmd everything.
                         Key::Named(NamedKey::Backspace) => {
-                            let current_query =
-                                self.window.screen.renderer.command_palette.query.clone();
-                            if !current_query.is_empty() {
-                                let mut chars = current_query.chars().collect::<Vec<_>>();
-                                chars.pop();
-                                self.window
-                                    .screen
-                                    .renderer
-                                    .command_palette
-                                    .set_query(chars.into_iter().collect());
+                            use crate::renderer::command_palette::Erase;
+
+                            let mods = self.window.screen.modifiers.state();
+                            let by = if mods.super_key() {
+                                Erase::All
+                            } else if mods.alt_key() {
+                                Erase::Word
+                            } else {
+                                Erase::Char
+                            };
+                            if self.window.screen.renderer.command_palette.erase_query(by)
+                            {
                                 self.request_overlay_redraw();
                             }
                         }
                         _ => {
+                            // `1`–`9` open the numbered arrangement: always
+                            // with Cmd, bare only before typing a search.
+                            let quick_open = match &key_event.logical_key {
+                                Key::Character(key)
+                                    if self
+                                        .window
+                                        .screen
+                                        .modifiers
+                                        .state()
+                                        .super_key()
+                                        || self
+                                            .window
+                                            .screen
+                                            .renderer
+                                            .command_palette
+                                            .query
+                                            .is_empty() =>
+                                {
+                                    self.window
+                                        .screen
+                                        .renderer
+                                        .command_palette
+                                        .quick_open_arrangement(key.as_str())
+                                }
+                                _ => None,
+                            };
+                            if let Some(name) = quick_open {
+                                self.window
+                                    .screen
+                                    .renderer
+                                    .command_palette
+                                    .set_enabled(false);
+                                self.window
+                                    .screen
+                                    .context_manager
+                                    .restore_arrangement(name);
+                                self.request_overlay_redraw();
+                                return true;
+                            }
+
                             if let Some(text) = key_event.text.as_ref() {
                                 if self
                                     .window

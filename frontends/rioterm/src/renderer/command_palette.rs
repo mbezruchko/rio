@@ -34,6 +34,8 @@ const RESULT_ITEM_HEIGHT: f32 = 32.0;
 const RESULT_FONT_SIZE: f32 = 13.0;
 const SHORTCUT_FONT_SIZE: f32 = 11.0;
 const MAX_VISIBLE_RESULTS: usize = 8;
+/// Column for the `1`–`9` quick-open numbers in the arrangement list.
+const ARRANGEMENT_NUMBER_WIDTH: f32 = 22.0;
 
 // Copy icon (two overlapping page outlines with rounded corners,
 // drawn by layering filled + cutout rounded rects). Sized to fit
@@ -279,6 +281,44 @@ enum PaletteMode {
     /// The query names a new arrangement; existing names below it can
     /// be picked to overwrite.
     SaveArrangement(Vec<String>),
+}
+
+/// How much of the query Backspace erases, by modifier (macOS text
+/// field conventions): a char, a word (Option) or everything (Cmd).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Erase {
+    Char,
+    Word,
+    All,
+}
+
+fn erase(text: &str, by: Erase) -> String {
+    match by {
+        Erase::All => String::new(),
+        Erase::Char => {
+            let mut text = text.to_string();
+            text.pop();
+            text
+        }
+        Erase::Word => {
+            // Trailing spaces, then one run of word chars, or of
+            // punctuation when the text ends in punctuation.
+            let trimmed = text.trim_end();
+            let ends_in_word = trimmed
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
+            let cut = trimmed
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| {
+                    !c.is_whitespace() && c.is_alphanumeric() == ends_in_word
+                })
+                .last()
+                .map_or(trimmed.len(), |(i, _)| i);
+            trimmed[..cut].to_string()
+        }
+    }
 }
 
 /// What Enter does with the selected row in an arrangement mode.
@@ -587,6 +627,29 @@ impl CommandPalette {
         let count = self.filtered_rows().len();
         self.selected_index = self.selected_index.min(count.saturating_sub(1));
         self.scroll_offset = self.scroll_offset.min(self.selected_index);
+    }
+
+    /// Backspace in the query. Returns whether anything was erased.
+    pub fn erase_query(&mut self, by: Erase) -> bool {
+        if self.query.is_empty() {
+            return false;
+        }
+        let query = erase(&self.query, by);
+        self.set_query(query);
+        true
+    }
+
+    /// `1`–`9` in the arrangement list: the arrangement shown under that
+    /// number, if any.
+    pub fn quick_open_arrangement(&self, key: &str) -> Option<String> {
+        if !self.is_arrangements_mode() {
+            return None;
+        }
+        let number = key.parse::<usize>().ok().filter(|n| (1..=9).contains(n))?;
+        match self.filtered_rows().get(number - 1)? {
+            (_, PaletteRow::Arrangement { name }) => Some((*name).to_owned()),
+            _ => None,
+        }
     }
 
     /// What Enter does in an arrangement mode, if a row is selected.
@@ -955,8 +1018,25 @@ impl CommandPalette {
                 }),
                 ..DrawOpts::default()
             };
-            let row_text_x = input_x + INPUT_PADDING_X;
+            let mut row_text_x = input_x + INPUT_PADDING_X;
             let row_text_y = item_y + (RESULT_ITEM_HEIGHT - RESULT_FONT_SIZE) / 2.0;
+            // Arrangements carry their quick-open number in a left column.
+            if matches!(row, PaletteRow::Arrangement { .. }) {
+                if actual_index < 9 {
+                    let number = (actual_index + 1).to_string();
+                    let number_opts = DrawOpts {
+                        font_size: RESULT_FONT_SIZE,
+                        ..shortcut_opts
+                    };
+                    sugarloaf.text_mut().draw(
+                        row_text_x,
+                        row_text_y,
+                        &number,
+                        &number_opts,
+                    );
+                }
+                row_text_x += ARRANGEMENT_NUMBER_WIDTH;
+            }
             sugarloaf
                 .text_mut()
                 .draw(row_text_x, row_text_y, row.title(), &result_opts);
@@ -1385,6 +1465,44 @@ mod tests {
             palette.get_selected_arrangement(),
             Some(ArrangementPick::Save("work".to_string()))
         );
+    }
+
+    #[test]
+    fn erase_follows_text_field_conventions() {
+        assert_eq!(erase("my work", Erase::Char), "my wor");
+        assert_eq!(erase("my work", Erase::Word), "my ");
+        assert_eq!(erase("my work  ", Erase::Word), "my ");
+        assert_eq!(erase("api-v2", Erase::Word), "api-");
+        assert_eq!(erase("api-", Erase::Word), "api");
+        assert_eq!(erase("work", Erase::Word), "");
+        assert_eq!(erase("   ", Erase::Word), "");
+        assert_eq!(erase("my work", Erase::All), "");
+        assert_eq!(erase("проект", Erase::Char), "проек");
+
+        let mut palette = CommandPalette::new();
+        assert!(!palette.erase_query(Erase::Word));
+        palette.set_query("my work".to_string());
+        assert!(palette.erase_query(Erase::Word));
+        assert_eq!(palette.query, "my ");
+    }
+
+    #[test]
+    fn digits_open_the_numbered_arrangement() {
+        let mut palette = CommandPalette::new();
+        assert_eq!(palette.quick_open_arrangement("1"), None);
+
+        palette.enter_arrangements_mode(vec!["api".to_string(), "web".to_string()]);
+        assert_eq!(palette.quick_open_arrangement("2"), Some("web".to_string()));
+        assert_eq!(palette.quick_open_arrangement("3"), None);
+        assert_eq!(palette.quick_open_arrangement("0"), None);
+        assert_eq!(palette.quick_open_arrangement("x"), None);
+
+        // Numbers follow the filtered list.
+        palette.set_query("we".to_string());
+        assert_eq!(palette.quick_open_arrangement("1"), Some("web".to_string()));
+
+        palette.enter_save_arrangement_mode(vec!["api".to_string()]);
+        assert_eq!(palette.quick_open_arrangement("1"), None);
     }
 
     #[test]
