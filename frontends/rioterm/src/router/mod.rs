@@ -343,7 +343,36 @@ impl Route<'_> {
                                 .renderer
                                 .command_palette
                                 .get_selected_action();
-                            use crate::renderer::command_palette::PaletteAction;
+                            use crate::renderer::command_palette::{
+                                ArrangementPick, PaletteAction,
+                            };
+
+                            // Arrangement modes: hand the name to the
+                            // application, which owns every window.
+                            if let Some(pick) = self
+                                .window
+                                .screen
+                                .renderer
+                                .command_palette
+                                .get_selected_arrangement()
+                            {
+                                self.window
+                                    .screen
+                                    .renderer
+                                    .command_palette
+                                    .set_enabled(false);
+                                let context_manager = &self.window.screen.context_manager;
+                                match pick {
+                                    ArrangementPick::Restore(name) => {
+                                        context_manager.restore_arrangement(name)
+                                    }
+                                    ArrangementPick::Save(name) => {
+                                        context_manager.save_arrangement(name)
+                                    }
+                                }
+                                self.request_overlay_redraw();
+                                return true;
+                            }
 
                             // Fonts-mode Enter: copy the family name to
                             // the system clipboard and close. The copy
@@ -376,6 +405,24 @@ impl Route<'_> {
                                         .command_palette
                                         .enter_fonts_mode(fonts);
                                 }
+                                Some(PaletteAction::RestoreArrangement) => {
+                                    self.window
+                                        .screen
+                                        .renderer
+                                        .command_palette
+                                        .enter_arrangements_mode(
+                                            crate::arrangement::list(),
+                                        );
+                                }
+                                Some(PaletteAction::SaveArrangement) => {
+                                    self.window
+                                        .screen
+                                        .renderer
+                                        .command_palette
+                                        .enter_save_arrangement_mode(
+                                            crate::arrangement::list(),
+                                        );
+                                }
                                 // Any other command is a one-shot: close
                                 // the palette first, then dispatch.
                                 Some(action) => {
@@ -395,6 +442,34 @@ impl Route<'_> {
                                         .renderer
                                         .command_palette
                                         .set_enabled(false);
+                                }
+                            }
+                            self.request_overlay_redraw();
+                        }
+                        // Cmd+Shift+Backspace in the arrangement list
+                        // deletes the selected arrangement.
+                        Key::Named(NamedKey::Backspace)
+                            if self.window.screen.modifiers.state().super_key()
+                                && self.window.screen.modifiers.state().shift_key()
+                                && self
+                                    .window
+                                    .screen
+                                    .renderer
+                                    .command_palette
+                                    .is_arrangements_mode() =>
+                        {
+                            use crate::renderer::command_palette::ArrangementPick;
+
+                            let palette =
+                                &mut self.window.screen.renderer.command_palette;
+                            if let Some(ArrangementPick::Restore(name)) =
+                                palette.get_selected_arrangement()
+                            {
+                                match crate::arrangement::delete(&name) {
+                                    Ok(()) => palette.remove_arrangement(&name),
+                                    Err(error) => tracing::error!(
+                                        "could not delete arrangement {name:?}: {error}"
+                                    ),
                                 }
                             }
                             self.request_overlay_redraw();
@@ -641,7 +716,7 @@ impl Router<'_> {
         config: &'a rio_backend::config::Config,
         open_url: Option<String>,
         app_id: Option<&str>,
-    ) {
+    ) -> WindowId {
         let tab_id = if config.navigation.is_native() {
             let id = self.current_tab_id;
             self.current_tab_id = self.current_tab_id.wrapping_add(1);
@@ -676,6 +751,75 @@ impl Router<'_> {
         }
 
         self.routes.insert(id, route);
+        id
+    }
+
+    /// Every terminal window as one arrangement, top-left window first.
+    /// The quake dropdown is not part of it.
+    pub fn arrangement(&self) -> crate::arrangement::Arrangement {
+        let mut windows: Vec<crate::arrangement::WindowArrangement> = self
+            .routes
+            .iter()
+            .filter(|(id, _)| Some(**id) != self.quake_window_id)
+            .map(|(_, route)| {
+                let winit_window = &route.window.winit_window;
+                let mut window = route.window.screen.arrangement();
+                window.position = winit_window.outer_position().ok().map(|p| [p.x, p.y]);
+                let size = winit_window.inner_size();
+                window.size = Some([size.width, size.height]);
+                window
+            })
+            .collect();
+        windows.sort_by_key(|window| {
+            window
+                .position
+                .map_or((i32::MAX, i32::MAX), |[x, y]| (y, x))
+        });
+        crate::arrangement::Arrangement { windows }
+    }
+
+    /// Open a saved arrangement: one new window per saved window, its
+    /// first pane started in the first tab's directory.
+    pub fn restore_arrangement(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        event_proxy: EventProxy,
+        config: &rio_backend::config::Config,
+        app_id: Option<&str>,
+        arrangement: &crate::arrangement::Arrangement,
+    ) {
+        for saved in &arrangement.windows {
+            let open_url = saved
+                .tabs
+                .first()
+                .and_then(|tab| tab.layout.first_cwd())
+                .and_then(|dir| url::Url::from_directory_path(dir).ok())
+                .map(String::from);
+            let id = self.create_window(
+                event_loop,
+                event_proxy.clone(),
+                config,
+                open_url,
+                app_id,
+            );
+            let Some(route) = self.routes.get_mut(&id) else {
+                continue;
+            };
+            if let Some([width, height]) = saved.size {
+                let _ = route
+                    .window
+                    .winit_window
+                    .request_inner_size(PhysicalSize::new(width, height));
+            }
+            if let Some([x, y]) = saved.position {
+                route
+                    .window
+                    .winit_window
+                    .set_outer_position(PhysicalPosition::new(x, y));
+            }
+            route.window.screen.restore_arrangement(saved);
+            route.request_redraw();
+        }
     }
 
     /// Create the quake dropdown window: borderless, always on top,

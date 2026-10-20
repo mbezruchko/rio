@@ -270,6 +270,8 @@ impl From<String> for Action {
             "toggleappearancetheme" => Some(Action::ToggleAppearanceTheme),
             "togglefullscreen" => Some(Action::ToggleFullscreen),
             "opencommandpalette" => Some(Action::OpenCommandPalette),
+            "restorearrangement" => Some(Action::RestoreArrangement),
+            "savearrangement" => Some(Action::SaveArrangement),
             "none" => Some(Action::None),
             _ => None,
         };
@@ -522,6 +524,12 @@ pub enum Action {
 
     /// Toggle the command palette overlay.
     OpenCommandPalette,
+
+    /// Pick a saved window arrangement to open (command palette).
+    RestoreArrangement,
+
+    /// Name and save every window as an arrangement (command palette).
+    SaveArrangement,
 
     /// Allow receiving char input.
     ReceiveChar,
@@ -1128,6 +1136,8 @@ pub fn platform_key_bindings(
         "n", ModifiersState::SUPER; Action::WindowCreateNew;
         ",", ModifiersState::SUPER; Action::ConfigEditor;
         "p", ModifiersState::SUPER | ModifiersState::SHIFT; Action::OpenCommandPalette;
+        "r", ModifiersState::SUPER | ModifiersState::SHIFT; Action::RestoreArrangement;
+        "s", ModifiersState::SUPER | ModifiersState::SHIFT; Action::SaveArrangement;
 
         // Search
         "f", ModifiersState::SUPER, ~BindingMode::SEARCH; Action::SearchForward;

@@ -176,6 +176,10 @@ pub enum RioEvent {
     HideOtherApplications,
     UpdateConfig,
     CreateWindow,
+    /// Save every window as the named arrangement.
+    SaveArrangement(String),
+    /// Open the named arrangement in new windows.
+    RestoreArrangement(String),
     ToggleQuake,
     CloseWindow,
     CreateNativeTab(Option<String>),
@@ -366,6 +370,10 @@ impl Debug for RioEvent {
                 write!(f, "ChildExited(route={route}, status={status:?})")
             }
             RioEvent::CreateWindow => write!(f, "CreateWindow"),
+            RioEvent::SaveArrangement(name) => write!(f, "SaveArrangement({name})"),
+            RioEvent::RestoreArrangement(name) => {
+                write!(f, "RestoreArrangement({name})")
+            }
             RioEvent::ToggleQuake => write!(f, "ToggleQuake"),
             RioEvent::CloseWindow => write!(f, "CloseWindow"),
             RioEvent::CreateNativeTab(_) => write!(f, "CreateNativeTab"),

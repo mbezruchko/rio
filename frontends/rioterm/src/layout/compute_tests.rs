@@ -647,3 +647,98 @@ fn test_split_inside_resized_panel_preserves_proportions() {
         "Bottom (bottom half) should be ~400px tall, got {bottom_h}"
     );
 }
+
+/// A tab split right 30/70, its right side split down: the arrangement
+/// snapshot keeps directions, ratios and pane directories.
+#[test]
+fn test_arrangement_snapshot_of_split_tree() {
+    use crate::arrangement::{Layout, SplitDirection};
+    use taffy::{FlexDirection, TaffyTree};
+
+    let mut tree: TaffyTree<()> = TaffyTree::new();
+    let panel = |tree: &mut TaffyTree<()>, grow: f32| {
+        tree.new_leaf(Style {
+            display: Display::Flex,
+            flex_basis: length(0.0),
+            flex_grow: grow,
+            flex_shrink: 1.0,
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let container = |tree: &mut TaffyTree<()>, direction: FlexDirection, grow: f32| {
+        tree.new_leaf(Style {
+            display: Display::Flex,
+            flex_direction: direction,
+            flex_basis: length(0.0),
+            flex_grow: grow,
+            flex_shrink: 1.0,
+            ..Default::default()
+        })
+        .unwrap()
+    };
+
+    let root = tree
+        .new_leaf(Style {
+            display: Display::Flex,
+            size: geometry::Size {
+                width: length(1000.0),
+                height: length(800.0),
+            },
+            ..Default::default()
+        })
+        .unwrap();
+    let row = container(&mut tree, FlexDirection::Row, 1.0);
+    let left = panel(&mut tree, 0.3);
+    let column = container(&mut tree, FlexDirection::Column, 0.7);
+    let top = panel(&mut tree, 1.0);
+    let bottom = panel(&mut tree, 1.0);
+    tree.add_child(root, row).unwrap();
+    tree.add_child(row, left).unwrap();
+    tree.add_child(row, column).unwrap();
+    tree.add_child(column, top).unwrap();
+    tree.add_child(column, bottom).unwrap();
+    tree.compute_layout(
+        root,
+        geometry::Size {
+            width: AvailableSpace::MaxContent,
+            height: AvailableSpace::MaxContent,
+        },
+    )
+    .unwrap();
+
+    let cwd = |node: NodeId| {
+        [(left, "/left"), (top, "/top"), (bottom, "/bottom")]
+            .iter()
+            .find(|(n, _)| *n == node)
+            .map(|(_, dir)| Some(dir.to_string()))
+    };
+    let layout = arrangement_from_tree(&tree, row, &cwd);
+
+    let Layout::Split {
+        direction,
+        ratio,
+        first,
+        second,
+    } = layout
+    else {
+        panic!("expected a split, got {layout:?}");
+    };
+    assert_eq!(direction, SplitDirection::Right);
+    assert!((ratio - 0.3).abs() < 0.01, "ratio {ratio}");
+    assert_eq!(
+        *first,
+        Layout::Pane {
+            cwd: Some("/left".to_string())
+        }
+    );
+    let Layout::Split {
+        direction, ratio, ..
+    } = second.as_ref()
+    else {
+        panic!("expected the right side to be split");
+    };
+    assert_eq!(*direction, SplitDirection::Down);
+    assert!((ratio - 0.5).abs() < 0.01, "ratio {ratio}");
+    assert_eq!(second.first_cwd(), Some("/top"));
+}

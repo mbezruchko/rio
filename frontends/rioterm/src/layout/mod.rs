@@ -396,6 +396,36 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
         }
     }
 
+    /// Snapshot of the split tree for a saved arrangement.
+    pub fn arrangement_layout(&self) -> crate::arrangement::Layout {
+        let top = self
+            .tree
+            .children(self.root_node)
+            .ok()
+            .and_then(|children| children.first().copied());
+        match top {
+            Some(node) => arrangement_from_tree(&self.tree, node, &|node| {
+                self.inner
+                    .get(&node)
+                    .map(|item| item.val.working_directory())
+            }),
+            None => crate::arrangement::Layout::Pane { cwd: None },
+        }
+    }
+
+    /// Size two sibling panels `ratio : 1 - ratio` (restored arrangements).
+    pub fn set_split_ratio(
+        &mut self,
+        first: NodeId,
+        second: NodeId,
+        ratio: f32,
+        sugarloaf: &mut Sugarloaf,
+    ) {
+        let _ = self.set_panel_size(first, Some(ratio), None);
+        let _ = self.set_panel_size(second, Some(1.0 - ratio), None);
+        self.apply_taffy_layout(sugarloaf);
+    }
+
     /// Resize two adjacent panels by moving their shared border.
     /// `delta` is in physical pixels (positive = right/down).
     pub fn resize_border(
@@ -1668,6 +1698,62 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
         for item in self.inner.values() {
             sugarloaf.clear_image_overlays_for(item.val.rich_text_id);
             sugarloaf.remove_route_images(item.val.route_id);
+        }
+    }
+}
+
+/// Arrangement layout of `node`. `pane_cwd` answers for panel leaves
+/// (`Some(cwd)`) and `None` for containers. `split_panel` builds
+/// two-child containers; a wider one folds to the right.
+fn arrangement_from_tree(
+    tree: &TaffyTree<()>,
+    node: NodeId,
+    pane_cwd: &dyn Fn(NodeId) -> Option<Option<String>>,
+) -> crate::arrangement::Layout {
+    use crate::arrangement::{Layout, SplitDirection};
+
+    if let Some(cwd) = pane_cwd(node) {
+        return Layout::Pane { cwd };
+    }
+    let direction = match tree.style(node).map(|style| style.flex_direction) {
+        Ok(taffy::FlexDirection::Column | taffy::FlexDirection::ColumnReverse) => {
+            SplitDirection::Down
+        }
+        _ => SplitDirection::Right,
+    };
+    let children = tree.children(node).unwrap_or_default();
+    arrangement_from_children(tree, &children, direction, pane_cwd)
+}
+
+fn arrangement_from_children(
+    tree: &TaffyTree<()>,
+    children: &[NodeId],
+    direction: crate::arrangement::SplitDirection,
+    pane_cwd: &dyn Fn(NodeId) -> Option<Option<String>>,
+) -> crate::arrangement::Layout {
+    use crate::arrangement::{Layout, SplitDirection};
+
+    match children {
+        [] => Layout::Pane { cwd: None },
+        [only] => arrangement_from_tree(tree, *only, pane_cwd),
+        [first, rest @ ..] => {
+            let size = |node: &NodeId| {
+                tree.layout(*node).map_or(0.0, |layout| match direction {
+                    SplitDirection::Right => layout.size.width,
+                    SplitDirection::Down => layout.size.height,
+                })
+            };
+            let first_size = size(first);
+            let total = first_size + rest.iter().map(size).sum::<f32>();
+            let ratio = if total > 0.0 { first_size / total } else { 0.5 };
+            Layout::Split {
+                direction,
+                ratio,
+                first: Box::new(arrangement_from_tree(tree, *first, pane_cwd)),
+                second: Box::new(arrangement_from_children(
+                    tree, rest, direction, pane_cwd,
+                )),
+            }
         }
     }
 }

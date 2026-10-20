@@ -1495,6 +1495,18 @@ impl Screen<'_> {
                             self.mark_dirty();
                         }
                     }
+                    Act::RestoreArrangement => {
+                        let palette = &mut self.renderer.command_palette;
+                        palette.set_enabled(true);
+                        palette.enter_arrangements_mode(crate::arrangement::list());
+                        self.mark_dirty();
+                    }
+                    Act::SaveArrangement => {
+                        let palette = &mut self.renderer.command_palette;
+                        palette.set_enabled(true);
+                        palette.enter_save_arrangement_mode(crate::arrangement::list());
+                        self.mark_dirty();
+                    }
                     Act::Minimize => {
                         self.context_manager.minimize();
                     }
@@ -1721,8 +1733,134 @@ impl Screen<'_> {
     }
 
     pub fn create_tab(&mut self, clipboard: &mut Clipboard) {
-        let redirect = true;
+        self.open_tab_with(|context_manager, rich_text_id| {
+            context_manager.add_context(true, rich_text_id)
+        });
+        self.cancel_search(clipboard);
+    }
 
+    /// This window as a saved arrangement: tabs, split trees and pane
+    /// directories. The caller fills in the window frame.
+    pub fn arrangement(&self) -> crate::arrangement::WindowArrangement {
+        let tabs = self
+            .context_manager
+            .contexts()
+            .iter()
+            .map(|grid| crate::arrangement::TabArrangement {
+                title: grid.custom_title.clone(),
+                color: grid.custom_color.map(crate::arrangement::color_to_hex),
+                layout: grid.arrangement_layout(),
+            })
+            .collect();
+        crate::arrangement::WindowArrangement {
+            position: None,
+            size: None,
+            active_tab: self.context_manager.current_index(),
+            tabs,
+        }
+    }
+
+    /// Rebuild a saved window in this fresh one. The first tab reuses the
+    /// initial pane, which the caller started in that tab's first
+    /// directory. Native tabs open asynchronously in their own windows,
+    /// so only the first tab is restored there.
+    pub fn restore_arrangement(
+        &mut self,
+        window: &crate::arrangement::WindowArrangement,
+    ) {
+        for (index, tab) in window.tabs.iter().enumerate() {
+            if index > 0 {
+                if self.context_manager.config.is_native {
+                    break;
+                }
+                self.open_tab_in(tab.layout.first_cwd().map(str::to_owned));
+            }
+            self.apply_tab_arrangement(tab);
+        }
+
+        let old_index = self.context_manager.current_index();
+        let target = window
+            .active_tab
+            .min(self.context_manager.len().saturating_sub(1));
+        if target != old_index {
+            self.context_manager.set_current(target);
+            let new_index = self.context_manager.current_index();
+            self.context_manager.switch_context_visibility(
+                &mut self.sugarloaf,
+                old_index,
+                new_index,
+            );
+        }
+        self.refresh_titles();
+        self.mark_dirty();
+    }
+
+    /// Shape the current tab after `tab`: splits, directories, name and
+    /// color. The tab's first pane already runs in `tab.layout.first_cwd()`.
+    fn apply_tab_arrangement(&mut self, tab: &crate::arrangement::TabArrangement) {
+        let pane = self.context_manager.current_grid().current;
+        self.replay_split(&tab.layout, pane);
+        let current = self.context_manager.current_index();
+        if tab.title.is_some() {
+            self.context_manager
+                .set_custom_title(current, tab.title.clone());
+        }
+        if let Some(color) = tab
+            .color
+            .as_deref()
+            .and_then(crate::arrangement::color_from_hex)
+        {
+            self.context_manager.set_custom_color(current, Some(color));
+        }
+    }
+
+    fn open_tab_in(&mut self, working_dir: Option<String>) {
+        self.open_tab_with(|context_manager, rich_text_id| {
+            context_manager.add_context_in(true, rich_text_id, working_dir)
+        });
+    }
+
+    /// Replay `layout`'s splits on `pane`: split it, size the pair, then
+    /// recurse into both halves (each split wraps its pane in place).
+    fn replay_split(&mut self, layout: &crate::arrangement::Layout, pane: taffy::NodeId) {
+        let crate::arrangement::Layout::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } = layout
+        else {
+            return;
+        };
+
+        self.context_manager.current_grid_mut().current = pane;
+        self.context_manager.select_route_from_current_grid();
+        self.context_manager.split_in(
+            next_rich_text_id(),
+            *direction == crate::arrangement::SplitDirection::Down,
+            second.first_cwd().map(str::to_owned),
+            &mut self.sugarloaf,
+        );
+        let new_pane = self.context_manager.current_grid().current;
+        if new_pane == pane {
+            // The pane could not be created; keep what exists.
+            return;
+        }
+        self.context_manager.current_grid_mut().set_split_ratio(
+            pane,
+            new_pane,
+            crate::arrangement::clamp_ratio(*ratio),
+            &mut self.sugarloaf,
+        );
+        self.replay_split(first, pane);
+        self.replay_split(second, new_pane);
+    }
+
+    /// Open a new tab via `add` (which receives the panel id) and show it.
+    fn open_tab_with(
+        &mut self,
+        add: impl FnOnce(&mut ContextManager<EventProxy>, usize),
+    ) {
         // We resize the current tab ahead to prepare the
         // dimensions to be copied to next tab.
         let num_tabs = self.ctx().len();
@@ -1741,7 +1879,7 @@ impl Screen<'_> {
         let _ = self.renderer.margin.top
             + self.renderer.island.as_ref().map_or(0.0, |i| i.height());
         let rich_text_id = next_rich_text_id();
-        self.context_manager.add_context(redirect, rich_text_id);
+        add(&mut self.context_manager, rich_text_id);
         let new_index = self.context_manager.current_index();
         self.context_manager.switch_context_visibility(
             &mut self.sugarloaf,
@@ -1749,7 +1887,6 @@ impl Screen<'_> {
             new_index,
         );
 
-        self.cancel_search(clipboard);
         self.mark_dirty();
     }
 
@@ -3926,12 +4063,15 @@ impl Screen<'_> {
                 let mut terminal = self.context_manager.current_mut().terminal.lock();
                 terminal.clear_saved_history();
             }
-            PaletteAction::ListFonts => {
-                // Handled in the router: switches the palette into fonts
-                // mode and keeps it open. If we land here it's either a
-                // bug (router should have intercepted) or an external
-                // caller firing the action directly — do nothing so the
-                // palette just closes without side effects.
+            PaletteAction::ListFonts
+            | PaletteAction::SaveArrangement
+            | PaletteAction::RestoreArrangement => {
+                // Handled in the router: switches the palette into its
+                // list mode (fonts, arrangements) and keeps it open. If we
+                // land here it's either a bug (router should have
+                // intercepted) or an external caller firing the action
+                // directly — do nothing so the palette just closes without
+                // side effects.
             }
             PaletteAction::Quit => {
                 self.context_manager.quit();

@@ -97,6 +97,11 @@ pub enum PaletteAction {
     /// font list as its contents. Handled by `router`, not
     /// `Screen::execute_palette_action`.
     ListFonts,
+    /// Name and save every window as an arrangement. Like `ListFonts`,
+    /// swaps the palette's contents and is handled by `router`.
+    SaveArrangement,
+    /// Pick a saved arrangement to open. Handled by `router`.
+    RestoreArrangement,
     Quit,
 }
 
@@ -228,6 +233,16 @@ const COMMANDS: &[Command] = &[
         action: PaletteAction::ListFonts,
     },
     Command {
+        title: "Save Window Arrangement",
+        shortcut: "Cmd+Shift+S",
+        action: PaletteAction::SaveArrangement,
+    },
+    Command {
+        title: "Restore Window Arrangement",
+        shortcut: "Cmd+Shift+R",
+        action: PaletteAction::RestoreArrangement,
+    },
+    Command {
         title: "Quit",
         shortcut: "Cmd+Q",
         action: PaletteAction::Quit,
@@ -247,6 +262,18 @@ const COMMANDS: &[Command] = &[
 enum PaletteMode {
     Commands,
     Fonts(Vec<String>),
+    /// Saved arrangement names; Enter opens the selected one.
+    Arrangements(Vec<String>),
+    /// The query names a new arrangement; existing names below it can
+    /// be picked to overwrite.
+    SaveArrangement(Vec<String>),
+}
+
+/// What Enter does with the selected row in an arrangement mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrangementPick {
+    Restore(String),
+    Save(String),
 }
 
 /// One row in the filtered result list. Variants carry exactly the
@@ -261,6 +288,14 @@ enum PaletteRow<'a> {
     Font {
         family: &'a str,
     },
+    Arrangement {
+        name: &'a str,
+    },
+    /// Save target: the typed name (`new`) or an existing arrangement.
+    SaveArrangement {
+        name: &'a str,
+        new: bool,
+    },
 }
 
 impl<'a> PaletteRow<'a> {
@@ -268,6 +303,8 @@ impl<'a> PaletteRow<'a> {
         match *self {
             PaletteRow::Command { title, .. } => title,
             PaletteRow::Font { family } => family,
+            PaletteRow::Arrangement { name } => name,
+            PaletteRow::SaveArrangement { name, .. } => name,
         }
     }
 
@@ -275,13 +312,18 @@ impl<'a> PaletteRow<'a> {
         match *self {
             PaletteRow::Command { shortcut, .. } => shortcut,
             PaletteRow::Font { .. } => "",
+            PaletteRow::Arrangement { .. } => "",
+            PaletteRow::SaveArrangement { new: true, .. } => "Save",
+            PaletteRow::SaveArrangement { new: false, .. } => "Overwrite",
         }
     }
 
     fn action(&self) -> Option<PaletteAction> {
         match *self {
             PaletteRow::Command { action, .. } => Some(action),
-            PaletteRow::Font { .. } => None,
+            PaletteRow::Font { .. }
+            | PaletteRow::Arrangement { .. }
+            | PaletteRow::SaveArrangement { .. } => None,
         }
     }
 }
@@ -498,12 +540,56 @@ impl CommandPalette {
     /// palette open. Called by the router after the user picks the
     /// `List Fonts` command.
     pub fn enter_fonts_mode(&mut self, fonts: Vec<String>) {
-        self.mode = PaletteMode::Fonts(fonts);
+        self.enter_mode(PaletteMode::Fonts(fonts));
+    }
+
+    /// List saved arrangements; Enter opens the selected one.
+    pub fn enter_arrangements_mode(&mut self, names: Vec<String>) {
+        self.enter_mode(PaletteMode::Arrangements(names));
+    }
+
+    /// Ask for an arrangement name; existing names can be overwritten.
+    pub fn enter_save_arrangement_mode(&mut self, names: Vec<String>) {
+        self.enter_mode(PaletteMode::SaveArrangement(names));
+    }
+
+    fn enter_mode(&mut self, mode: PaletteMode) {
+        self.mode = mode;
         self.query.clear();
         self.selected_index = 0;
         self.scroll_offset = 0;
         self.caret_blink_start = Instant::now();
         self.last_scroll_time = None;
+    }
+
+    #[inline]
+    pub fn is_arrangements_mode(&self) -> bool {
+        matches!(self.mode, PaletteMode::Arrangements(_))
+    }
+
+    /// Drop a deleted arrangement from the open list.
+    pub fn remove_arrangement(&mut self, name: &str) {
+        if let PaletteMode::Arrangements(names) = &mut self.mode {
+            names.retain(|n| n != name);
+        }
+        let count = self.filtered_rows().len();
+        self.selected_index = self.selected_index.min(count.saturating_sub(1));
+        self.scroll_offset = self.scroll_offset.min(self.selected_index);
+    }
+
+    /// What Enter does in an arrangement mode, if a row is selected.
+    pub fn get_selected_arrangement(&self) -> Option<ArrangementPick> {
+        self.filtered_rows()
+            .get(self.selected_index)
+            .and_then(|(_, row)| match row {
+                PaletteRow::Arrangement { name } => {
+                    Some(ArrangementPick::Restore((*name).to_owned()))
+                }
+                PaletteRow::SaveArrangement { name, .. } => {
+                    Some(ArrangementPick::Save(name.trim().to_owned()))
+                }
+                _ => None,
+            })
     }
 
     /// Append committed or typed text to the query, applying the
@@ -565,7 +651,7 @@ impl CommandPalette {
             .get(self.selected_index)
             .and_then(|(_, row)| match row {
                 PaletteRow::Font { family } => Some((*family).to_owned()),
-                PaletteRow::Command { .. } => None,
+                _ => None,
             })
     }
 
@@ -604,6 +690,33 @@ impl CommandPalette {
                     Some((score, PaletteRow::Font { family }))
                 })
                 .collect(),
+            PaletteMode::Arrangements(names) => names
+                .iter()
+                .filter_map(|name| {
+                    let score = fuzzy_score(&self.query, name)?;
+                    Some((score, PaletteRow::Arrangement { name }))
+                })
+                .collect(),
+            PaletteMode::SaveArrangement(names) => {
+                let typed = self.query.trim();
+                // The typed name leads unless it is an existing one,
+                // which then shows once, as an overwrite.
+                let typed_is_new = !typed.is_empty() && !names.iter().any(|n| n == typed);
+                typed_is_new
+                    .then_some((
+                        i32::MAX,
+                        PaletteRow::SaveArrangement {
+                            name: typed,
+                            new: true,
+                        },
+                    ))
+                    .into_iter()
+                    .chain(names.iter().filter_map(|name| {
+                        let score = fuzzy_score(&self.query, name)?;
+                        Some((score, PaletteRow::SaveArrangement { name, new: false }))
+                    }))
+                    .collect()
+            }
         };
 
         results.sort_by_key(|r| std::cmp::Reverse(r.0));
@@ -721,6 +834,10 @@ impl CommandPalette {
         let placeholder = match self.mode {
             PaletteMode::Commands => "Type a command...",
             PaletteMode::Fonts(_) => "Type a font name...",
+            PaletteMode::Arrangements(_) => {
+                "Open an arrangement... (Cmd+Shift+Backspace deletes)"
+            }
+            PaletteMode::SaveArrangement(_) => "Name this arrangement...",
         };
         let display_text = if self.query.is_empty() {
             placeholder
@@ -1209,6 +1326,61 @@ mod tests {
         assert!(palette.last_scroll_time.is_some());
         palette.set_query("Family 00".to_string());
         assert!(palette.last_scroll_time.is_none());
+    }
+
+    #[test]
+    fn arrangements_mode_picks_the_selected_name() {
+        let mut palette = CommandPalette::new();
+        palette.enter_arrangements_mode(vec!["api".to_string(), "web".to_string()]);
+        assert!(palette.is_arrangements_mode());
+        palette.set_query("we".to_string());
+        assert_eq!(
+            palette.get_selected_arrangement(),
+            Some(ArrangementPick::Restore("web".to_string()))
+        );
+        assert_eq!(palette.get_selected_action(), None);
+
+        palette.set_query(String::new());
+        palette.remove_arrangement("api");
+        assert_eq!(
+            palette.get_selected_arrangement(),
+            Some(ArrangementPick::Restore("web".to_string()))
+        );
+    }
+
+    #[test]
+    fn save_arrangement_mode_offers_the_typed_name_first() {
+        let mut palette = CommandPalette::new();
+        palette.enter_save_arrangement_mode(vec!["work".to_string()]);
+        assert!(!palette.is_arrangements_mode());
+
+        // Nothing typed: only existing names, as overwrites.
+        assert_eq!(
+            palette.get_selected_arrangement(),
+            Some(ArrangementPick::Save("work".to_string()))
+        );
+
+        palette.set_query("  new one ".to_string());
+        assert_eq!(
+            palette.get_selected_arrangement(),
+            Some(ArrangementPick::Save("new one".to_string()))
+        );
+
+        // Typing an existing name lists it once.
+        palette.set_query("work".to_string());
+        assert_eq!(palette.filtered_rows().len(), 1);
+        assert_eq!(
+            palette.get_selected_arrangement(),
+            Some(ArrangementPick::Save("work".to_string()))
+        );
+    }
+
+    #[test]
+    fn reopening_returns_to_commands_after_arrangements() {
+        let mut palette = CommandPalette::new();
+        palette.enter_arrangements_mode(vec!["api".to_string()]);
+        palette.set_enabled(true);
+        assert!(matches!(palette.mode, PaletteMode::Commands));
     }
 
     #[test]

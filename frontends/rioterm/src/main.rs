@@ -5,6 +5,7 @@
 #![windows_subsystem = "windows"]
 
 mod application;
+mod arrangement;
 mod bindings;
 mod cli;
 mod constants;

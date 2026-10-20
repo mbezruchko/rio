@@ -1005,6 +1005,26 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     self.app_id.as_deref(),
                 );
             }
+            RioEventType::Rio(RioEvent::SaveArrangement(name)) => {
+                let arrangement = self.router.arrangement();
+                if let Err(error) = crate::arrangement::save(&name, &arrangement) {
+                    tracing::error!("could not save arrangement {name:?}: {error}");
+                }
+            }
+            RioEventType::Rio(RioEvent::RestoreArrangement(name)) => {
+                match crate::arrangement::load(&name) {
+                    Ok(arrangement) => self.router.restore_arrangement(
+                        event_loop,
+                        self.event_proxy.clone(),
+                        &self.config,
+                        self.app_id.as_deref(),
+                        &arrangement,
+                    ),
+                    Err(error) => {
+                        tracing::error!("could not open arrangement {name:?}: {error}")
+                    }
+                }
+            }
             RioEventType::Rio(RioEvent::ToggleQuake) => {
                 self.toggle_quake_window(event_loop);
             }

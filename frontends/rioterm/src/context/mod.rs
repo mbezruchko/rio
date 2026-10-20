@@ -81,6 +81,21 @@ impl<T: rio_backend::event::EventListener> Drop for Context<T> {
 }
 
 impl<T: EventListener> Context<T> {
+    /// The pane's working directory: the shell's OSC 7 report, else the
+    /// foreground process's cwd.
+    pub fn working_directory(&self) -> Option<String> {
+        if let Some(dir) = self.terminal.lock().current_directory.clone() {
+            return Some(dir.to_string_lossy().into_owned());
+        }
+        #[cfg(not(target_os = "windows"))]
+        if let Ok(path) =
+            teletypewriter::foreground_process_path(*self.main_fd, self.shell_pid)
+        {
+            return Some(path.to_string_lossy().into_owned());
+        }
+        None
+    }
+
     #[inline]
     pub fn set_selection(&mut self, selection_range: Option<SelectionRange>) {
         let old_selection = self.renderable_content.selection_range;
@@ -622,6 +637,20 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             .send_event(RioEvent::CreateWindow, self.window_id);
     }
 
+    /// Save every window as the named arrangement (handled app-wide).
+    #[inline]
+    pub fn save_arrangement(&self, name: String) {
+        self.event_proxy
+            .send_event(RioEvent::SaveArrangement(name), self.window_id);
+    }
+
+    /// Open the named arrangement in new windows (handled app-wide).
+    #[inline]
+    pub fn restore_arrangement(&self, name: String) {
+        self.event_proxy
+            .send_event(RioEvent::RestoreArrangement(name), self.window_id);
+    }
+
     #[inline]
     pub fn toggle_quake(&self) {
         self.event_proxy
@@ -1041,6 +1070,11 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
     }
 
     #[inline]
+    pub fn contexts(&self) -> &[ContextGrid<T>] {
+        &self.contexts
+    }
+
+    #[inline]
     pub fn current_grid_len(&self) -> usize {
         self.contexts[self.current_index].len()
     }
@@ -1241,6 +1275,18 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             }
         }
 
+        self.split_in(rich_text_id, split_down, working_dir, sugarloaf);
+    }
+
+    /// Split the current pane, starting the new one in `working_dir`
+    /// (`None`: the configured `working-dir`).
+    pub fn split_in(
+        &mut self,
+        rich_text_id: usize,
+        split_down: bool,
+        working_dir: Option<String>,
+        sugarloaf: &mut Sugarloaf,
+    ) {
         let mut cloned_config = self.config.clone();
         if working_dir.is_some() {
             cloned_config.working_dir = working_dir;
@@ -1364,6 +1410,17 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             }
         }
 
+        self.add_context_in(redirect, rich_text_id, working_dir);
+    }
+
+    /// Open a tab whose first pane starts in `working_dir` (`None`: the
+    /// configured `working-dir`).
+    pub fn add_context_in(
+        &mut self,
+        redirect: bool,
+        rich_text_id: usize,
+        working_dir: Option<String>,
+    ) {
         if self.config.is_native {
             self.event_proxy
                 .send_event(RioEvent::CreateNativeTab(working_dir), self.window_id);
