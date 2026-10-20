@@ -203,6 +203,10 @@ pub struct CursorConfig {
     pub blinking: bool,
     #[serde(default = "default_cursor_interval", rename = "blinking-interval")]
     pub blinking_interval: u64,
+    /// Draw the cursor of unfocused splits and windows as a hollow block.
+    /// When `false` they keep `shape`, without blinking.
+    #[serde(default = "default_bool_true", rename = "unfocused-hollow")]
+    pub unfocused_hollow: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -710,6 +714,7 @@ impl Default for CursorConfig {
             shape: default_cursor(),
             blinking: false,
             blinking_interval: default_cursor_interval(),
+            unfocused_hollow: true,
         }
     }
 }
@@ -906,6 +911,7 @@ mod tests {
         );
 
         assert_eq!(result.cursor.shape, CursorShape::Underline);
+        assert!(result.cursor.unfocused_hollow);
         assert_eq!(result.fonts, SugarloafFonts::default());
         assert_eq!(result.theme, String::default());
         // Colors
@@ -913,6 +919,21 @@ mod tests {
         assert_eq!(result.colors.foreground, colors::defaults::foreground());
         assert_eq!(result.colors.tabs_active, colors::defaults::tabs_active());
         assert_eq!(result.colors.cursor, colors::defaults::cursor());
+    }
+
+    #[test]
+    fn test_change_config_cursor_unfocused_hollow() {
+        let result = create_temporary_config(
+            "change-cursor-unfocused-hollow",
+            r#"
+            [cursor]
+            shape = 'beam'
+            unfocused-hollow = false
+        "#,
+        );
+
+        assert_eq!(result.cursor.shape, CursorShape::Beam);
+        assert!(!result.cursor.unfocused_hollow);
     }
 
     #[test]

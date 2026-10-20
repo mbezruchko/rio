@@ -1280,6 +1280,7 @@ pub unsafe extern "C" fn sl_render_surface(
         let render_style = rio_grid::cursor_render_style(rio_grid::CursorRenderInputs {
             visible: cursor_visible,
             focused,
+            unfocused_hollow: true,
             blink_visible: cursor_blink_visible,
             blinking: cursor_blinking,
             preedit: preedit_active,

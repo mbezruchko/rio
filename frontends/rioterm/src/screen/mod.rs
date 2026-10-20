@@ -4535,6 +4535,7 @@ impl Screen<'_> {
                     rio_grid::cursor_render_style(rio_grid::CursorRenderInputs {
                         visible: p.cursor_visible,
                         focused: p.is_active && self.renderer.is_window_focused,
+                        unfocused_hollow: self.renderer.config_cursor_unfocused_hollow,
                         blink_visible: p.cursor_blink_visible,
                         blinking: p.cursor_blinking,
                         preedit: p.cursor_preedit,

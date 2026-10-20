@@ -586,6 +586,10 @@ pub struct CursorRenderInputs {
     pub visible: bool,
     /// `true` when this panel currently has focus.
     pub focused: bool,
+    /// `cursor.unfocused-hollow`: draw unfocused panels with the
+    /// hollow block. When `false` they keep the configured shape,
+    /// steady (no blink).
+    pub unfocused_hollow: bool,
     /// `true` for the visible half of a blink cycle. Pass `true`
     /// when blink is disabled.
     pub blink_visible: bool,
@@ -613,10 +617,10 @@ pub fn cursor_render_style(opts: CursorRenderInputs) -> Option<CursorRenderStyle
     if !opts.visible || opts.shape == CursorShape::Hidden {
         return None;
     }
-    if !opts.focused {
+    if !opts.focused && opts.unfocused_hollow {
         return Some(CursorRenderStyle::BlockHollow);
     }
-    if opts.blinking && !opts.blink_visible {
+    if opts.focused && opts.blinking && !opts.blink_visible {
         return None;
     }
     Some(match opts.shape {
@@ -3424,6 +3428,48 @@ mod preedit_suppression_tests {
         assert!(!pre.suppresses(spacer, 9));
         // Column 0 spacer never underflows.
         assert!(!pre.suppresses(spacer, 0));
+    }
+}
+
+#[cfg(test)]
+mod cursor_render_style_tests {
+    use super::*;
+    use rio_backend::ansi::CursorShape;
+
+    fn inputs(focused: bool, unfocused_hollow: bool) -> CursorRenderInputs {
+        CursorRenderInputs {
+            visible: true,
+            focused,
+            unfocused_hollow,
+            blink_visible: false,
+            blinking: true,
+            preedit: false,
+            shape: CursorShape::Beam,
+        }
+    }
+
+    #[test]
+    fn unfocused_is_hollow_by_default() {
+        assert_eq!(
+            cursor_render_style(inputs(false, true)),
+            Some(CursorRenderStyle::BlockHollow)
+        );
+    }
+
+    /// With `unfocused-hollow = false` an unfocused panel keeps its
+    /// shape and never blinks out.
+    #[test]
+    fn unfocused_keeps_shape_steady_when_not_hollow() {
+        assert_eq!(
+            cursor_render_style(inputs(false, false)),
+            Some(CursorRenderStyle::Bar)
+        );
+    }
+
+    #[test]
+    fn focused_blink_off_half_is_hidden() {
+        assert_eq!(cursor_render_style(inputs(true, false)), None);
+        assert_eq!(cursor_render_style(inputs(true, true)), None);
     }
 }
 
