@@ -49,7 +49,9 @@ use rio_window::event::Modifiers;
 use rio_window::event::MouseButton;
 #[cfg(target_os = "macos")]
 use rio_window::keyboard::ModifiersKeyState;
-use rio_window::keyboard::{Key, KeyLocation, ModifiersState, NamedKey};
+use rio_window::keyboard::{
+    Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey,
+};
 use rio_window::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use rio_window::window::CursorIcon;
 use std::error::Error;
@@ -147,6 +149,88 @@ fn binding_key_for(
             location: key.location,
         },
     }
+}
+
+/// The US-layout binding key for `key`'s physical key when the active
+/// layout types a non-ASCII character there (`ы` on the S key of a
+/// Russian layout). Bindings fall back to it, like macOS menu shortcuts
+/// and iTerm2, so `Cmd+Shift+S` works whatever the layout. Only for
+/// shortcuts: plain typing (and vi mode's bare-letter bindings) keeps
+/// the layout's characters.
+fn latin_binding_key(
+    key: &rio_window::event::KeyEvent,
+    mods: ModifiersState,
+) -> Option<BindingKey> {
+    if !(mods.super_key() || mods.control_key() || mods.alt_key()) {
+        return None;
+    }
+    let Key::Character(ch) = key.key_without_modifiers() else {
+        return None;
+    };
+    if ch.is_ascii() {
+        return None;
+    }
+    let PhysicalKey::Code(code) = key.physical_key else {
+        return None;
+    };
+    Some(BindingKey::Keycode {
+        key: Key::Character(latin_char(code)?.into()),
+        location: key.location,
+    })
+}
+
+/// The character a US layout types on `code`, without modifiers.
+fn latin_char(code: KeyCode) -> Option<&'static str> {
+    Some(match code {
+        KeyCode::KeyA => "a",
+        KeyCode::KeyB => "b",
+        KeyCode::KeyC => "c",
+        KeyCode::KeyD => "d",
+        KeyCode::KeyE => "e",
+        KeyCode::KeyF => "f",
+        KeyCode::KeyG => "g",
+        KeyCode::KeyH => "h",
+        KeyCode::KeyI => "i",
+        KeyCode::KeyJ => "j",
+        KeyCode::KeyK => "k",
+        KeyCode::KeyL => "l",
+        KeyCode::KeyM => "m",
+        KeyCode::KeyN => "n",
+        KeyCode::KeyO => "o",
+        KeyCode::KeyP => "p",
+        KeyCode::KeyQ => "q",
+        KeyCode::KeyR => "r",
+        KeyCode::KeyS => "s",
+        KeyCode::KeyT => "t",
+        KeyCode::KeyU => "u",
+        KeyCode::KeyV => "v",
+        KeyCode::KeyW => "w",
+        KeyCode::KeyX => "x",
+        KeyCode::KeyY => "y",
+        KeyCode::KeyZ => "z",
+        KeyCode::Digit0 => "0",
+        KeyCode::Digit1 => "1",
+        KeyCode::Digit2 => "2",
+        KeyCode::Digit3 => "3",
+        KeyCode::Digit4 => "4",
+        KeyCode::Digit5 => "5",
+        KeyCode::Digit6 => "6",
+        KeyCode::Digit7 => "7",
+        KeyCode::Digit8 => "8",
+        KeyCode::Digit9 => "9",
+        KeyCode::Backquote => "`",
+        KeyCode::Minus => "-",
+        KeyCode::Equal => "=",
+        KeyCode::BracketLeft => "[",
+        KeyCode::BracketRight => "]",
+        KeyCode::Backslash => "\\",
+        KeyCode::Semicolon => ";",
+        KeyCode::Quote => "'",
+        KeyCode::Comma => ",",
+        KeyCode::Period => ".",
+        KeyCode::Slash => "/",
+        _ => return None,
+    })
 }
 
 pub struct ChromePress {
@@ -1108,10 +1192,24 @@ impl Screen<'_> {
         let binding_mode = BindingMode::new(mode, search_active);
         let mut ignore_chars = None;
 
+        // Nothing bound to the typed character: match the US-layout one.
+        let latin = latin_binding_key(key, mods).filter(|_| {
+            !self.bindings.iter().any(|binding| {
+                binding.is_triggered_by(
+                    binding_mode.to_owned(),
+                    mods,
+                    &binding_key_for(&binding.trigger, key, mods),
+                )
+            })
+        });
+
         for i in 0..self.bindings.len() {
             let binding = &self.bindings[i];
             let action = binding.action.clone();
-            let key_match = binding_key_for(&binding.trigger, key, mods);
+            let key_match = match (&latin, &binding.trigger) {
+                (Some(latin), BindingKey::Keycode { .. }) => latin.clone(),
+                _ => binding_key_for(&binding.trigger, key, mods),
+            };
 
             if binding.is_triggered_by(binding_mode.to_owned(), mods, &key_match) {
                 *ignore_chars.get_or_insert(true) &= action != Act::ReceiveChar;
@@ -1768,17 +1866,22 @@ impl Screen<'_> {
         key: &rio_window::event::KeyEvent,
     ) -> Option<Act> {
         let mods = self.modifiers.state();
-        self.bindings
-            .iter()
-            .filter(|binding| {
-                matches!(
-                    binding.action,
-                    Act::SaveArrangement | Act::RestoreArrangement
-                )
-            })
-            .find(|binding| {
+        let arrangement_bindings = || {
+            self.bindings.iter().filter(move |binding| {
                 binding.mods == mods
-                    && binding.trigger == binding_key_for(&binding.trigger, key, mods)
+                    && matches!(
+                        binding.action,
+                        Act::SaveArrangement | Act::RestoreArrangement
+                    )
+            })
+        };
+        arrangement_bindings()
+            .find(|binding| {
+                binding.trigger == binding_key_for(&binding.trigger, key, mods)
+            })
+            .or_else(|| {
+                let latin = latin_binding_key(key, mods)?;
+                arrangement_bindings().find(|binding| binding.trigger == latin)
             })
             .map(|binding| binding.action.clone())
     }
@@ -5440,6 +5543,16 @@ fn post_process_hyperlink_uri(uri: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latin_char_follows_the_us_layout() {
+        assert_eq!(latin_char(KeyCode::KeyS), Some("s"));
+        assert_eq!(latin_char(KeyCode::KeyT), Some("t"));
+        assert_eq!(latin_char(KeyCode::Digit1), Some("1"));
+        assert_eq!(latin_char(KeyCode::BracketLeft), Some("["));
+        assert_eq!(latin_char(KeyCode::Backslash), Some("\\"));
+        assert_eq!(latin_char(KeyCode::ArrowLeft), None);
+    }
 
     #[test]
     fn chrome_press_validates_double_click() {
