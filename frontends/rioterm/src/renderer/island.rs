@@ -541,6 +541,9 @@ pub struct Island {
     color_picker_tab: Option<usize>,
     /// Current rename input text while picker is open
     rename_input: String,
+    /// What the rename input opened with. An unedited field is not a
+    /// rename: committing it would pin the live title as a custom one.
+    rename_original: String,
     /// Caret blink timer
     rename_caret_time: Instant,
     /// In-progress tab drag (reorder by dragging)
@@ -582,6 +585,7 @@ impl Island {
             progress_bar_error_color: [1.0, 0.3, 0.3, 1.0],
             color_picker_tab: None,
             rename_input: String::new(),
+            rename_original: String::new(),
             rename_caret_time: Instant::now(),
             drag: None,
             slide_springs: FxHashMap::default(),
@@ -1438,6 +1442,7 @@ impl Island {
                 .custom_title(tab_index)
                 .map(str::to_string)
                 .unwrap_or_else(|| current_title.to_string());
+            self.rename_original = self.rename_input.clone();
             self.rename_caret_time = Instant::now();
         }
     }
@@ -1463,6 +1468,10 @@ impl Island {
     /// Apply the rename input as a custom title for the current picker tab
     fn apply_rename(&mut self, context_manager: &mut ContextManager<EventProxy>) {
         if let Some(tab) = self.color_picker_tab {
+            // Opening the picker to pick a color must not freeze the title.
+            if self.rename_input == self.rename_original {
+                return;
+            }
             let trimmed = self.rename_input.trim().to_string();
             let title = (!trimmed.is_empty()).then_some(trimmed);
             context_manager.set_custom_title(tab, title);
