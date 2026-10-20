@@ -8,6 +8,7 @@
 
 use crate::context::ContextManager;
 use crate::renderer::helpers::spring::Spring;
+use rio_backend::config::navigation::TabStyle;
 use rio_backend::event::{EventProxy, ProgressReport, ProgressState};
 use rio_backend::sugarloaf::text::DrawOpts;
 use rio_backend::sugarloaf::{Attributes, Sugarloaf};
@@ -84,6 +85,17 @@ const CLOSE_ALPHA_IDLE: f32 = 0.55;
 const CLOSE_ALPHA_HOVER: f32 = 0.95;
 const CLOSE_STROKE_WIDTH: f32 = 1.2;
 const INACTIVE_CUSTOM_MUTE: f32 = 0.55;
+// Flat tab style (`navigation.tab-style = "flat"`).
+// Title padding per side: clears the close button on the left and the
+// shortcut hint on the right.
+const FLAT_TITLE_PADDING_X: f32 = 36.0;
+const FLAT_HINT_MARGIN_RIGHT: f32 = 10.0;
+const FLAT_HINT_ALPHA: f32 = 0.6;
+const FLAT_SEPARATOR_WIDTH: f32 = 1.0;
+// Underline marking the active tab (light over any fill on dark themes).
+const FLAT_ACTIVE_INDICATOR_HEIGHT: f32 = 2.0;
+const NEW_TAB_BUTTON_WIDTH: f32 = 32.0;
+const NEW_TAB_GLYPH_HALF: f32 = 5.0;
 
 struct TabDrag {
     // Index of the dragged tab, follows the tab as it reorders.
@@ -142,29 +154,66 @@ pub struct TabStripLayout {
     pub left_margin: f32,
     pub tab_width: f32,
     pub tabs_width: f32,
+    /// Flat tab style: tabs fill the strip and a `+` slot follows them.
+    pub flat: bool,
+}
+
+impl TabStripLayout {
+    /// Left edge of the `+` new-tab slot, right after the last tab.
+    /// Only the flat style has one.
+    #[inline]
+    pub fn new_tab_button_x(&self) -> Option<f32> {
+        self.flat.then_some(self.left_margin + self.tabs_width)
+    }
+
+    #[inline]
+    pub fn new_tab_button_hit(&self, x_unscaled: f32) -> bool {
+        self.new_tab_button_x()
+            .is_some_and(|x| (x..x + NEW_TAB_BUTTON_WIDTH).contains(&x_unscaled))
+    }
+
+    /// Tab slot under `x_unscaled`, if any.
+    #[inline]
+    pub fn tab_at(&self, x_unscaled: f32, num_tabs: usize) -> Option<usize> {
+        let x_in_tabs = x_unscaled - self.left_margin;
+        if num_tabs == 0
+            || self.tab_width <= 0.0
+            || x_in_tabs < 0.0
+            || x_in_tabs >= self.tabs_width
+        {
+            return None;
+        }
+        Some(((x_in_tabs / self.tab_width) as usize).min(num_tabs - 1))
+    }
 }
 
 /// Compute the tab strip layout from the physical window width.
-/// `max_tab_width` comes from `navigation.max-tab-width` (logical px).
+/// `max_tab_width` comes from `navigation.max-tab-width` (logical px);
+/// flat tabs ignore it and share the strip minus the `+` slot.
 pub fn tab_strip_layout(
     window_width: f32,
     scale_factor: f32,
     num_tabs: usize,
     max_tab_width: f32,
+    flat: bool,
 ) -> TabStripLayout {
     #[cfg(target_os = "macos")]
     let left_margin = ISLAND_MARGIN_LEFT_MACOS;
     #[cfg(not(target_os = "macos"))]
     let left_margin = 0.0;
 
-    let available_width =
-        (window_width / scale_factor) - ISLAND_MARGIN_RIGHT - left_margin;
-    let tab_width =
-        (available_width / num_tabs.max(1) as f32).clamp(0.0, max_tab_width.max(0.0));
+    let (right_reserved, max_tab_width) = if flat {
+        (NEW_TAB_BUTTON_WIDTH, f32::INFINITY)
+    } else {
+        (ISLAND_MARGIN_RIGHT, max_tab_width.max(0.0))
+    };
+    let available_width = (window_width / scale_factor) - right_reserved - left_margin;
+    let tab_width = (available_width / num_tabs.max(1) as f32).clamp(0.0, max_tab_width);
     TabStripLayout {
         left_margin,
         tab_width,
         tabs_width: tab_width * num_tabs as f32,
+        flat,
     }
 }
 
@@ -191,6 +240,50 @@ fn island_fills(bg: [f32; 4]) -> IslandFills {
             outline: None,
             close_hover: [1.0, 1.0, 1.0, 0.14],
         }
+    }
+}
+
+struct FlatFills {
+    /// Inactive tabs, the traffic-light zone and the `+` slot. The
+    /// active tab gets no fill: it shows the terminal background and
+    /// reads as part of the pane below.
+    inactive: [f32; 4],
+    separator: [f32; 4],
+    /// Active tab underline, blended over the tab's own fill: light
+    /// gray on a black tab, cream on an orange one (iTerm2 "Minimal").
+    indicator: [f32; 4],
+}
+
+fn flat_fills(bg: [f32; 4]) -> FlatFills {
+    let luminance = 0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2];
+    let (tint, separator, indicator) = if luminance > 0.5 {
+        (
+            [0.0, 0.0, 0.0, 0.06],
+            [0.0, 0.0, 0.0, 0.12],
+            [0.0, 0.0, 0.0, 0.55],
+        )
+    } else {
+        (
+            [1.0, 1.0, 1.0, 0.07],
+            [1.0, 1.0, 1.0, 0.12],
+            [1.0, 1.0, 1.0, 0.75],
+        )
+    };
+    FlatFills {
+        inactive: over(bg, tint),
+        separator,
+        indicator,
+    }
+}
+
+/// Text color for a tab drawn over `fill`: dark on light, light on dark.
+#[inline]
+fn contrast_text_color(fill: [f32; 4]) -> [f32; 4] {
+    let luminance = 0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2];
+    if luminance > 0.5 {
+        [0.08, 0.08, 0.08, 1.0]
+    } else {
+        [0.96, 0.96, 0.96, 1.0]
     }
 }
 
@@ -253,6 +346,16 @@ fn island_rect(slot_x: f32, tab_width: f32) -> (f32, f32, f32, f32, f32) {
     (x, y, w, h, radius)
 }
 
+/// A tab's drawn rect: the inset island, or the whole slot when flat.
+#[inline]
+fn tab_rect(flat: bool, slot_x: f32, tab_width: f32) -> (f32, f32, f32, f32, f32) {
+    if flat {
+        (slot_x, 0.0, tab_width, ISLAND_HEIGHT, 0.0)
+    } else {
+        island_rect(slot_x, tab_width)
+    }
+}
+
 /// How much width a lone tab's title may occupy, in logical pixels.
 ///
 /// `window_width` is physical, as `render` receives it, while everything
@@ -279,17 +382,22 @@ fn single_title_x(
     (((window_width / scale_factor) - text_width) / 2.0).max(left_margin + TAB_PADDING_X)
 }
 
+/// Islands anchor the button to their right edge; flat tabs mirror it
+/// to the left, where the shortcut hint doesn't sit.
 #[inline]
-fn close_button_center(island_x: f32, island_w: f32) -> Option<f32> {
-    (island_w >= CLOSE_MIN_ISLAND_WIDTH)
-        .then_some(island_x + island_w - CLOSE_MARGIN_RIGHT)
+fn close_button_center(island_x: f32, island_w: f32, flat: bool) -> Option<f32> {
+    (island_w >= CLOSE_MIN_ISLAND_WIDTH).then_some(if flat {
+        island_x + CLOSE_MARGIN_RIGHT
+    } else {
+        island_x + island_w - CLOSE_MARGIN_RIGHT
+    })
 }
 
 #[inline]
 fn close_button_center_x(layout: &TabStripLayout, tab_index: usize) -> Option<f32> {
     let slot_x = layout.left_margin + tab_index as f32 * layout.tab_width;
-    let (ix, _, iw, _, _) = island_rect(slot_x, layout.tab_width);
-    close_button_center(ix, iw)
+    let (ix, _, iw, _, _) = tab_rect(layout.flat, slot_x, layout.tab_width);
+    close_button_center(ix, iw, layout.flat)
 }
 
 #[inline]
@@ -339,10 +447,78 @@ fn draw_close_button(
     );
 }
 
+/// Close glyph plus, when hovered, its rounded backdrop.
+fn draw_close_button_with_hover(
+    sugarloaf: &mut Sugarloaf,
+    cx: f32,
+    hover_fill: [f32; 4],
+    color: [f32; 4],
+    hover: bool,
+) {
+    if hover {
+        sugarloaf.rounded_rect(
+            None,
+            cx - CLOSE_HOVER_HALF,
+            ISLAND_HEIGHT / 2.0 - CLOSE_HOVER_HALF,
+            CLOSE_HOVER_HALF * 2.0,
+            CLOSE_HOVER_HALF * 2.0,
+            hover_fill,
+            0.05,
+            CLOSE_HOVER_CORNER_RADIUS,
+            1,
+        );
+    }
+    draw_close_button(sugarloaf, cx, color, hover, 2);
+}
+
+/// Digit of the `⌘N` hint for a tab, matching Rio's macOS defaults:
+/// ⌘1–⌘8 select by position and ⌘9 the last tab.
+#[inline]
+fn shortcut_digit(tab_index: usize, num_tabs: usize) -> Option<char> {
+    if tab_index >= 8 {
+        return (tab_index + 1 == num_tabs).then_some('9');
+    }
+    char::from_digit(tab_index as u32 + 1, 10)
+}
+
+/// Right-aligned `⌘N` hint. Drawn as two runs: the UI text layer picks
+/// one font per run from its first char, and the terminal font may not
+/// carry ⌘ — the digit stays in the title's font.
+fn draw_shortcut_hint(
+    sugarloaf: &mut Sugarloaf,
+    right: f32,
+    digit: char,
+    color: [f32; 4],
+) {
+    let opts = DrawOpts {
+        font_size: TITLE_FONT_SIZE,
+        color: color_u8([color[0], color[1], color[2], color[3] * FLAT_HINT_ALPHA]),
+        ..DrawOpts::default()
+    };
+    let mut buf = [0u8; 4];
+    let digit = digit.encode_utf8(&mut buf);
+    let ui = sugarloaf.text_mut();
+    let cmd_width = ui.measure("⌘", &opts);
+    let digit_width = ui.measure(digit, &opts);
+    let x = right - cmd_width - digit_width;
+    let y = (ISLAND_HEIGHT / 2.0) - (TITLE_FONT_SIZE / 2.);
+    ui.draw(x, y, "⌘", &opts);
+    ui.draw(x + cmd_width, y, digit, &opts);
+}
+
+fn draw_new_tab_button(sugarloaf: &mut Sugarloaf, cx: f32, color: [f32; 4]) {
+    let cy = ISLAND_HEIGHT / 2.0;
+    let r = NEW_TAB_GLYPH_HALF;
+    sugarloaf.line(cx - r, cy, cx + r, cy, CLOSE_STROKE_WIDTH, 0.0, color, 2);
+    sugarloaf.line(cx, cy - r, cx, cy + r, CLOSE_STROKE_WIDTH, 0.0, color, 2);
+}
+
 pub struct Island {
     pub hide_if_single: bool,
     /// Cap on tab width in logical px (`navigation.max-tab-width`).
     pub max_tab_width: f32,
+    /// `navigation.tab-style`.
+    pub tab_style: TabStyle,
     pub inactive_text_color: [f32; 4],
     pub active_text_color: [f32; 4],
     /// Current progress bar state
@@ -374,9 +550,12 @@ pub struct Island {
     slide_springs: FxHashMap<usize, Spring>,
     /// Timestamp of the last spring advance, for per-frame dt.
     last_anim_frame: Instant,
-    /// Cursor is over the active island's close button — draws the
-    /// hover backdrop. Updated on every cursor move by `Screen`.
+    /// Cursor is over the close button — draws the hover backdrop.
+    /// Updated on every cursor move by `Screen`.
     close_hover: bool,
+    /// Tab under the cursor; flat tabs show their close button only
+    /// while hovered.
+    hover_tab: Option<usize>,
 }
 
 impl Island {
@@ -385,10 +564,12 @@ impl Island {
         active_text_color: [f32; 4],
         hide_if_single: bool,
         max_tab_width: f32,
+        tab_style: TabStyle,
     ) -> Self {
         Self {
             hide_if_single,
             max_tab_width,
+            tab_style,
             inactive_text_color,
             active_text_color,
             progress_state: None,
@@ -406,14 +587,35 @@ impl Island {
             slide_springs: FxHashMap::default(),
             last_anim_frame: Instant::now(),
             close_hover: false,
+            hover_tab: None,
         }
     }
 
     /// Set whether the cursor hovers the active island's close button.
     /// Returns true when the state changed (the caller redraws).
-    pub fn set_close_hover(&mut self, hover: bool) -> bool {
-        let changed = self.close_hover != hover;
-        self.close_hover = hover;
+    /// The strip layout `render` draws with; click handling must agree.
+    #[inline]
+    pub fn layout(
+        &self,
+        window_width: f32,
+        scale_factor: f32,
+        num_tabs: usize,
+    ) -> TabStripLayout {
+        tab_strip_layout(
+            window_width,
+            scale_factor,
+            num_tabs,
+            self.max_tab_width,
+            self.tab_style == TabStyle::Flat,
+        )
+    }
+
+    /// Set the hovered tab and whether the cursor is on its close
+    /// button. Returns whether anything changed.
+    pub fn set_hover(&mut self, tab: Option<usize>, close: bool) -> bool {
+        let changed = self.hover_tab != tab || self.close_hover != close;
+        self.hover_tab = tab;
+        self.close_hover = close;
         changed
     }
 
@@ -795,11 +997,11 @@ impl Island {
         self.slide_springs
             .retain(|_, s| s.update(dt, DRAG_ANIMATION_LENGTH));
 
-        let layout =
-            tab_strip_layout(window_width, scale_factor, num_tabs, self.max_tab_width);
+        let layout = self.layout(window_width, scale_factor, num_tabs);
         let TabStripLayout {
             left_margin,
             tab_width,
+            flat,
             ..
         } = layout;
 
@@ -816,6 +1018,55 @@ impl Island {
         // strip itself keeps the plain window background — the islands
         // float directly on it, with no strip tint or border lines.
         let fills = island_fills(bg_color);
+
+        // Flat style tints the strip instead: the traffic-light zone and
+        // the `+` slot here, inactive tabs in the loop below.
+        let flat_fills = flat_fills(bg_color);
+        let title_padding = if flat {
+            FLAT_TITLE_PADDING_X
+        } else {
+            TAB_PADDING_X
+        };
+        if flat {
+            sugarloaf.rect(
+                None,
+                0.0,
+                0.0,
+                left_margin,
+                ISLAND_HEIGHT,
+                flat_fills.inactive,
+                0.0,
+                0,
+            );
+            if let Some(button_x) = layout.new_tab_button_x() {
+                let strip_right = window_width / scale_factor;
+                sugarloaf.rect(
+                    None,
+                    button_x,
+                    0.0,
+                    (strip_right - button_x).max(0.0),
+                    ISLAND_HEIGHT,
+                    flat_fills.inactive,
+                    0.0,
+                    0,
+                );
+                sugarloaf.line(
+                    button_x,
+                    0.0,
+                    button_x,
+                    ISLAND_HEIGHT,
+                    FLAT_SEPARATOR_WIDTH,
+                    0.0,
+                    flat_fills.separator,
+                    1,
+                );
+                draw_new_tab_button(
+                    sugarloaf,
+                    button_x + NEW_TAB_BUTTON_WIDTH / 2.0,
+                    self.inactive_text_color,
+                );
+            }
+        }
 
         // Render each tab
         for tab_index in 0..num_tabs {
@@ -849,6 +1100,19 @@ impl Island {
             // fill to carry a custom colour, which moves to the text.
             let single = num_tabs == 1;
 
+            // A flat tab's custom color as drawn: inactive tabs mute it
+            // toward the strip. The result also picks the text color.
+            let flat_custom_fill = if flat && !single {
+                context_manager.custom_color(tab_index).map(|mut custom| {
+                    if !is_active {
+                        custom[3] *= INACTIVE_CUSTOM_MUTE;
+                    }
+                    custom
+                })
+            } else {
+                None
+            };
+
             let text_color = if single {
                 match context_manager.custom_color(tab_index) {
                     Some(mut custom) => {
@@ -857,6 +1121,14 @@ impl Island {
                     }
                     None => self.active_text_color,
                 }
+            } else if let Some(fill) = flat_custom_fill {
+                let mut base = if is_active {
+                    bg_color
+                } else {
+                    flat_fills.inactive
+                };
+                base[3] = 1.0;
+                contrast_text_color(over(base, fill))
             } else if is_active {
                 self.active_text_color
             } else {
@@ -878,7 +1150,7 @@ impl Island {
             let max_text_width = if single {
                 single_title_budget(window_width, scale_factor, left_margin) - bell_width
             } else {
-                tab_width - TAB_PADDING_X * 2.0 - bell_width
+                tab_width - title_padding * 2.0 - bell_width
             }
             .max(0.0);
             let title = fit_title_to_width(sugarloaf, &raw_title, max_text_width);
@@ -938,6 +1210,85 @@ impl Island {
                 continue;
             }
 
+            if flat {
+                // The active tab keeps the terminal background. A custom
+                // color goes over the slot, muted for inactive tabs like
+                // the island style.
+                if !is_active {
+                    sugarloaf.rect(
+                        None,
+                        tab_x,
+                        0.0,
+                        tab_width,
+                        ISLAND_HEIGHT,
+                        flat_fills.inactive,
+                        0.0,
+                        0,
+                    );
+                }
+                if let Some(fill) = flat_custom_fill {
+                    sugarloaf.rect(
+                        None,
+                        tab_x,
+                        0.0,
+                        tab_width,
+                        ISLAND_HEIGHT,
+                        fill,
+                        0.0,
+                        0,
+                    );
+                }
+                if is_active {
+                    sugarloaf.rect(
+                        None,
+                        tab_x,
+                        ISLAND_HEIGHT - FLAT_ACTIVE_INDICATOR_HEIGHT,
+                        tab_width,
+                        FLAT_ACTIVE_INDICATOR_HEIGHT,
+                        flat_fills.indicator,
+                        0.0,
+                        1,
+                    );
+                }
+                // Separator between tabs; the `+` slot draws its own.
+                if tab_index > 0 {
+                    sugarloaf.line(
+                        tab_x,
+                        0.0,
+                        tab_x,
+                        ISLAND_HEIGHT,
+                        FLAT_SEPARATOR_WIDTH,
+                        0.0,
+                        flat_fills.separator,
+                        1,
+                    );
+                }
+                if cfg!(target_os = "macos") && !hidden_by_drag {
+                    if let Some(digit) = shortcut_digit(tab_index, num_tabs) {
+                        draw_shortcut_hint(
+                            sugarloaf,
+                            tab_x + tab_width - FLAT_HINT_MARGIN_RIGHT,
+                            digit,
+                            text_color,
+                        );
+                    }
+                }
+                // Like iTerm2, the close button only shows on the hovered tab.
+                if self.hover_tab == Some(tab_index) && !hidden_by_drag {
+                    if let Some(cx) = close_button_center(tab_x, tab_width, true) {
+                        draw_close_button_with_hover(
+                            sugarloaf,
+                            cx,
+                            fills.close_hover,
+                            text_color,
+                            self.close_hover,
+                        );
+                    }
+                }
+                x_position += tab_width;
+                continue;
+            }
+
             // Rounded island for this tab. A custom color (picker /
             // color-automation) becomes the island fill: the active
             // tab keeps it vivid while inactive siblings are muted
@@ -974,26 +1325,13 @@ impl Island {
             );
 
             if is_active && num_tabs > 1 {
-                if let Some(cx) = close_button_center(ix, iw) {
-                    if self.close_hover {
-                        sugarloaf.rounded_rect(
-                            None,
-                            cx - CLOSE_HOVER_HALF,
-                            ISLAND_HEIGHT / 2.0 - CLOSE_HOVER_HALF,
-                            CLOSE_HOVER_HALF * 2.0,
-                            CLOSE_HOVER_HALF * 2.0,
-                            fills.close_hover,
-                            0.05,
-                            CLOSE_HOVER_CORNER_RADIUS,
-                            1,
-                        );
-                    }
-                    draw_close_button(
+                if let Some(cx) = close_button_center(ix, iw, false) {
+                    draw_close_button_with_hover(
                         sugarloaf,
                         cx,
+                        fills.close_hover,
                         self.active_text_color,
                         self.close_hover,
-                        2,
                     );
                 }
             }
@@ -1004,7 +1342,7 @@ impl Island {
 
         // Draw the floating (dragged) tab above the slot tabs.
         if let (Some(drag_idx), Some(floating_x)) = (drag_index, floating_left) {
-            let (ix, iy, iw, ih, radius) = island_rect(floating_x, tab_width);
+            let (ix, iy, iw, ih, radius) = tab_rect(flat, floating_x, tab_width);
 
             // Soft elevation: a slightly inflated dark halo behind the
             // lifted island so it reads as floating over the strip.
@@ -1028,7 +1366,12 @@ impl Island {
                 None => {
                     let mut base = bg_color;
                     base[3] = 1.0;
-                    over(base, fills.active)
+                    // A dragged flat tab is the active one: plain background.
+                    if flat {
+                        base
+                    } else {
+                        over(base, fills.active)
+                    }
                 }
             };
             draw_island(
@@ -1039,18 +1382,18 @@ impl Island {
                 ih,
                 radius,
                 fill,
-                fills.outline,
+                if flat { None } else { fills.outline },
                 None,
                 11,
             );
 
-            if let Some(cx) = close_button_center(ix, iw) {
+            if let Some(cx) = close_button_center(ix, iw, flat) {
                 draw_close_button(sugarloaf, cx, self.active_text_color, false, 12);
             }
 
             let raw_title = self.get_title_for_tab(context_manager, drag_idx);
             if !raw_title.is_empty() {
-                let max_text_width = (tab_width - TAB_PADDING_X * 2.0).max(0.0);
+                let max_text_width = (tab_width - title_padding * 2.0).max(0.0);
                 let title = fit_title_to_width(sugarloaf, &raw_title, max_text_width);
                 let title_opts = DrawOpts {
                     font_size: TITLE_FONT_SIZE,
@@ -1204,7 +1547,7 @@ impl Island {
             left_margin,
             tab_width,
             ..
-        } = tab_strip_layout(window_width, scale_factor, num_tabs, self.max_tab_width);
+        } = self.layout(window_width, scale_factor, num_tabs);
         let tab_x = left_margin + picker_tab as f32 * tab_width;
 
         // Picker is rendered just below the island
@@ -1546,7 +1889,7 @@ mod tests {
     /// is the point of dropping the island.
     #[test]
     fn single_title_budget_beats_a_tab_slot() {
-        let slot = tab_strip_layout(1600.0, 2.0, 1, 240.0).tab_width;
+        let slot = tab_strip_layout(1600.0, 2.0, 1, 240.0, false).tab_width;
         let slot_budget = (slot - TAB_PADDING_X * 2.0).max(0.0);
         assert!(
             single_title_budget(1600.0, 2.0, 0.0) > slot_budget,
@@ -1613,7 +1956,8 @@ mod tests {
         let inactive_color = [0.5, 0.5, 0.5, 1.0];
         let active_color = [0.9, 0.9, 0.9, 1.0];
 
-        let island = Island::new(inactive_color, active_color, true, 240.0);
+        let island =
+            Island::new(inactive_color, active_color, true, 240.0, TabStyle::Island);
 
         assert_eq!(island.inactive_text_color, inactive_color);
         assert_eq!(island.active_text_color, active_color);
@@ -1622,13 +1966,24 @@ mod tests {
 
     #[test]
     fn test_island_height() {
-        let island =
-            Island::new([0.8, 0.8, 0.8, 1.0], [1.0, 1.0, 1.0, 1.0], false, 240.0);
+        let island = Island::new(
+            [0.8, 0.8, 0.8, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            false,
+            240.0,
+            TabStyle::Island,
+        );
         assert_eq!(island.height(), ISLAND_HEIGHT);
     }
 
     fn test_island() -> Island {
-        Island::new([0.5, 0.5, 0.5, 1.0], [0.9, 0.9, 0.9, 1.0], false, 240.0)
+        Island::new(
+            [0.5, 0.5, 0.5, 1.0],
+            [0.9, 0.9, 0.9, 1.0],
+            false,
+            240.0,
+            TabStyle::Island,
+        )
     }
 
     #[test]
@@ -1824,7 +2179,7 @@ mod tests {
         // 1000 physical px @ 2x scale → 500 logical px window. Slots
         // stay below the cap here, so the math matches the old
         // fill-the-strip layout.
-        let layout = tab_strip_layout(1000.0, 2.0, 4, 240.0);
+        let layout = tab_strip_layout(1000.0, 2.0, 4, 240.0, false);
         #[cfg(target_os = "macos")]
         {
             assert_eq!(layout.left_margin, ISLAND_MARGIN_LEFT_MACOS);
@@ -1838,19 +2193,19 @@ mod tests {
             assert_eq!(layout.tabs_width, 492.0);
         }
         // Zero tabs clamps the divisor.
-        assert!(tab_strip_layout(1000.0, 2.0, 0, 240.0)
+        assert!(tab_strip_layout(1000.0, 2.0, 0, 240.0, false)
             .tab_width
             .is_finite());
     }
 
     #[test]
     fn tab_strip_layout_caps_slot_width() {
-        let layout = tab_strip_layout(3000.0, 2.0, 2, 240.0);
+        let layout = tab_strip_layout(3000.0, 2.0, 2, 240.0, false);
         assert_eq!(layout.tab_width, 240.0);
         assert_eq!(layout.tabs_width, 480.0);
 
         // The cap is configurable via navigation.max-tab-width.
-        let layout = tab_strip_layout(3000.0, 2.0, 2, 280.0);
+        let layout = tab_strip_layout(3000.0, 2.0, 2, 280.0, false);
         assert_eq!(layout.tab_width, 280.0);
         assert_eq!(layout.tabs_width, 560.0);
         // The tabs region ends well before the 1500 logical px strip.
@@ -1858,9 +2213,94 @@ mod tests {
 
         // Pathologically narrow window: width clamps at 0 instead of
         // going negative.
-        let layout = tab_strip_layout(10.0, 2.0, 4, 240.0);
+        let layout = tab_strip_layout(10.0, 2.0, 4, 240.0, false);
         assert_eq!(layout.tab_width, 0.0);
         assert_eq!(layout.tabs_width, 0.0);
+    }
+
+    #[test]
+    fn flat_layout_fills_strip_up_to_new_tab_button() {
+        // 3000 physical px @ 2x → 1500 logical px. Flat tabs ignore the
+        // max-tab-width cap and end exactly where the `+` slot starts,
+        // which itself ends at the window edge.
+        let layout = tab_strip_layout(3000.0, 2.0, 2, 240.0, true);
+        let button_x = layout.new_tab_button_x().unwrap();
+        assert!(layout.tab_width > 240.0);
+        assert_eq!(button_x, layout.left_margin + layout.tabs_width);
+        assert_eq!(button_x + NEW_TAB_BUTTON_WIDTH, 1500.0);
+
+        assert!(layout.new_tab_button_hit(button_x + 1.0));
+        assert!(!layout.new_tab_button_hit(button_x - 1.0));
+
+        // Islands have no `+` slot.
+        let island = tab_strip_layout(3000.0, 2.0, 2, 240.0, false);
+        assert_eq!(island.new_tab_button_x(), None);
+        assert!(!island.new_tab_button_hit(1499.0));
+    }
+
+    #[test]
+    fn flat_close_button_sits_left_clear_of_the_title() {
+        let layout = TabStripLayout {
+            left_margin: 0.0,
+            tab_width: 180.0,
+            tabs_width: 360.0,
+            flat: true,
+        };
+        let cx = close_button_center_x(&layout, 1).unwrap();
+        assert_eq!(cx, 180.0 + CLOSE_MARGIN_RIGHT);
+        // The hit box ends before the widest centred title starts.
+        assert!(cx + CLOSE_HIT_HALF_WIDTH <= 180.0 + FLAT_TITLE_PADDING_X);
+        assert!(close_button_hit(&layout, 1, cx));
+    }
+
+    #[test]
+    fn tab_at_maps_x_to_slots() {
+        let layout = TabStripLayout {
+            left_margin: 76.0,
+            tab_width: 100.0,
+            tabs_width: 300.0,
+            flat: true,
+        };
+        assert_eq!(layout.tab_at(10.0, 3), None);
+        assert_eq!(layout.tab_at(76.0, 3), Some(0));
+        assert_eq!(layout.tab_at(250.0, 3), Some(1));
+        assert_eq!(layout.tab_at(375.0, 3), Some(2));
+        assert_eq!(layout.tab_at(376.0, 3), None);
+    }
+
+    #[test]
+    fn colored_tab_text_contrasts_with_its_fill() {
+        // iTerm-like orange: dark text when active...
+        let orange = [0.93, 0.69, 0.37, 1.0];
+        assert!(contrast_text_color(orange)[0] < 0.5);
+        // ...and light text once muted over a dark strip.
+        let mut muted = orange;
+        muted[3] *= INACTIVE_CUSTOM_MUTE;
+        let strip = flat_fills([0.0, 0.0, 0.0, 1.0]).inactive;
+        assert!(contrast_text_color(over(strip, muted))[0] > 0.5);
+    }
+
+    #[test]
+    fn active_underline_is_light_over_any_fill_on_dark_themes() {
+        let indicator = flat_fills([0.0, 0.0, 0.0, 1.0]).indicator;
+        // Black active tab: light gray.
+        let on_black = over([0.0, 0.0, 0.0, 1.0], indicator);
+        assert!(on_black[0] > 0.7 && (on_black[0] - on_black[2]).abs() < 0.01);
+        // Orange active tab: cream, still warm.
+        let on_orange = over([0.93, 0.69, 0.37, 1.0], indicator);
+        assert!(on_orange[0] > 0.95 && on_orange[2] > 0.8 && on_orange[0] > on_orange[2]);
+        // Light themes get a dark underline instead.
+        assert!(flat_fills([0.98, 0.98, 0.98, 1.0]).indicator[0] < 0.5);
+    }
+
+    #[test]
+    fn shortcut_digits_follow_default_bindings() {
+        assert_eq!(shortcut_digit(0, 3), Some('1'));
+        assert_eq!(shortcut_digit(7, 12), Some('8'));
+        // ⌘9 is "last tab", not "ninth tab".
+        assert_eq!(shortcut_digit(8, 9), Some('9'));
+        assert_eq!(shortcut_digit(8, 12), None);
+        assert_eq!(shortcut_digit(11, 12), Some('9'));
     }
 
     #[test]
@@ -1919,6 +2359,7 @@ mod tests {
             left_margin: 0.0,
             tab_width: 100.0,
             tabs_width: 400.0,
+            flat: false,
         }
     }
 
@@ -1930,6 +2371,7 @@ mod tests {
             left_margin: 0.0,
             tab_width: 180.0,
             tabs_width: 360.0,
+            flat: false,
         };
         let cx = close_button_center_x(&layout, 1).unwrap();
         assert_eq!(
@@ -1945,6 +2387,7 @@ mod tests {
             left_margin: 0.0,
             tab_width: 60.0,
             tabs_width: 600.0,
+            flat: false,
         };
         assert_eq!(close_button_center_x(&narrow, 3), None);
     }
@@ -1959,6 +2402,7 @@ mod tests {
             left_margin: 0.0,
             tab_width: 180.0,
             tabs_width: 360.0,
+            flat: false,
         };
         let cx = close_button_center_x(&layout, 0).unwrap();
         let title_max_right = layout.tab_width - TAB_PADDING_X;

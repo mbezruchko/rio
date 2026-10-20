@@ -117,6 +117,19 @@ impl std::str::FromStr for NavigationMode {
     }
 }
 
+/// How `Tab` navigation draws its tabs.
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
+pub enum TabStyle {
+    /// Rounded islands floating on the strip, capped at `max-tab-width`.
+    #[default]
+    #[serde(alias = "island")]
+    Island,
+    /// Flat tabs sharing the full strip width with separators, shortcut
+    /// hints and a `+` new-tab button (iTerm2 "Minimal" look).
+    #[serde(alias = "flat")]
+    Flat,
+}
+
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct ColorAutomation {
     #[serde(default = "String::new")]
@@ -191,6 +204,8 @@ pub struct Navigation {
     /// held, so drags and selections stay in the panel they started in.
     #[serde(default = "bool::default", rename = "focus-follows-mouse")]
     pub focus_follows_mouse: bool,
+    #[serde(default = "TabStyle::default", rename = "tab-style")]
+    pub tab_style: TabStyle,
 }
 
 impl Default for Navigation {
@@ -209,6 +224,7 @@ impl Default for Navigation {
             open_config_with_split: true,
             max_tab_width: default_max_tab_width(),
             focus_follows_mouse: false,
+            tab_style: TabStyle::default(),
         }
     }
 }
@@ -380,6 +396,19 @@ mod tests {
         .unwrap();
         assert!(!split_only.navigation.current_working_directory);
         assert!(split_only.navigation.split_cwd());
+    }
+
+    #[test]
+    fn tab_style() {
+        use crate::config::navigation::TabStyle;
+
+        let default = toml::from_str::<Root>("[navigation]\nmode = 'Tab'\n").unwrap();
+        assert_eq!(default.navigation.tab_style, TabStyle::Island);
+
+        let flat = toml::from_str::<Root>("[navigation]\ntab-style = 'flat'\n").unwrap();
+        assert_eq!(flat.navigation.tab_style, TabStyle::Flat);
+        let flat = toml::from_str::<Root>("[navigation]\ntab-style = 'Flat'\n").unwrap();
+        assert_eq!(flat.navigation.tab_style, TabStyle::Flat);
     }
 
     #[test]

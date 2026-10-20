@@ -624,6 +624,9 @@ impl Config {
             if let Some(focus_follows_mouse) = navigation_overwrite.focus_follows_mouse {
                 self.navigation.focus_follows_mouse = focus_follows_mouse;
             }
+            if let Some(tab_style) = navigation_overwrite.tab_style {
+                self.navigation.tab_style = tab_style;
+            }
         }
 
         // Clamp after platform merge so both the base and any override go

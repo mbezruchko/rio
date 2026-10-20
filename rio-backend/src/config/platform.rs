@@ -111,6 +111,8 @@ pub struct PlatformNavigation {
     pub max_tab_width: Option<f32>,
     #[serde(default = "Option::default", rename = "focus-follows-mouse")]
     pub focus_follows_mouse: Option<bool>,
+    #[serde(default = "Option::default", rename = "tab-style")]
+    pub tab_style: Option<navigation::TabStyle>,
     #[serde(
         default = "Option::default",
         deserialize_with = "crate::config::colors::deserialize_to_arr_opt",

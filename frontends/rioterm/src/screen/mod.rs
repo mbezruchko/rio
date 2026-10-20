@@ -575,6 +575,7 @@ impl Screen<'_> {
         if let Some(mut island) = old_island {
             island.update_colors(config.colors.tabs, config.colors.tabs_active);
             island.max_tab_width = config.navigation.max_tab_width;
+            island.tab_style = config.navigation.tab_style;
             self.renderer.island = Some(island);
         }
 
@@ -2840,18 +2841,18 @@ impl Screen<'_> {
 
     #[inline]
     fn island_tab_layout(&self, num_tabs: usize) -> TabStripLayout {
-        let max_tab_width = self
-            .renderer
-            .island
-            .as_ref()
-            .map(|island| island.max_tab_width)
-            .unwrap_or_else(rio_backend::config::navigation::default_max_tab_width);
-        island::tab_strip_layout(
-            self.sugarloaf.window_size().width,
-            self.sugarloaf.scale_factor(),
-            num_tabs,
-            max_tab_width,
-        )
+        let window_width = self.sugarloaf.window_size().width;
+        let scale_factor = self.sugarloaf.scale_factor();
+        match self.renderer.island.as_ref() {
+            Some(island) => island.layout(window_width, scale_factor, num_tabs),
+            None => island::tab_strip_layout(
+                window_width,
+                scale_factor,
+                num_tabs,
+                rio_backend::config::navigation::default_max_tab_width(),
+                false,
+            ),
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -2897,37 +2898,76 @@ impl Screen<'_> {
         })
     }
 
-    fn apply_close_hover(&mut self, hover: bool) -> bool {
+    fn apply_tab_hover(&mut self, tab: Option<usize>, close: bool) -> bool {
         let changed = self
             .renderer
             .island
             .as_mut()
-            .is_some_and(|island| island.set_close_hover(hover));
+            .is_some_and(|island| island.set_hover(tab, close));
         if changed {
             self.mark_dirty();
         }
         changed
     }
 
+    /// Track the hovered tab and its close button. Islands only offer
+    /// the button on the active tab; flat tabs on whichever is hovered.
     pub fn update_close_button_hover(&mut self, mouse_x: f64, mouse_y: f64) -> bool {
         let num_tabs = self.context_manager.len();
         let scale_factor = self.sugarloaf.scale_factor();
-
-        let hovering = num_tabs > 1
+        let in_strip = num_tabs > 1
             && self.renderer.navigation.island_visible(num_tabs)
-            && mouse_y <= (ISLAND_HEIGHT * scale_factor) as f64
-            && island::close_button_hit(
-                &self.island_tab_layout(num_tabs),
-                self.context_manager.current_index(),
-                mouse_x as f32 / scale_factor,
-            );
+            && mouse_y <= (ISLAND_HEIGHT * scale_factor) as f64;
+        if !in_strip {
+            return self.apply_tab_hover(None, false);
+        }
 
-        self.apply_close_hover(hovering)
+        let layout = self.island_tab_layout(num_tabs);
+        let x = mouse_x as f32 / scale_factor;
+        let hovered = layout.tab_at(x, num_tabs);
+        let close_tab = if layout.flat {
+            hovered
+        } else {
+            Some(self.context_manager.current_index())
+        };
+        let on_close =
+            close_tab.is_some_and(|tab| island::close_button_hit(&layout, tab, x));
+
+        self.apply_tab_hover(hovered, on_close)
     }
 
     #[inline]
     pub fn clear_close_button_hover(&mut self) -> bool {
-        self.apply_close_hover(false)
+        self.apply_tab_hover(None, false)
+    }
+
+    /// Close any tab while keeping the current one in front (flat tabs
+    /// show a close button on every hovered tab).
+    fn close_tab_at(&mut self, index: usize, clipboard: &mut Clipboard) {
+        let current = self.context_manager.current_index();
+        if index == current {
+            self.close_tab(clipboard);
+            return;
+        }
+        // `close_tab` closes the current tab: point at the target, close
+        // it, then return to the tab that was in front.
+        self.context_manager.set_current(index);
+        self.close_tab(clipboard);
+        let keep = if current > index {
+            current - 1
+        } else {
+            current
+        };
+        let now = self.context_manager.current_index();
+        if keep != now && keep < self.context_manager.len() {
+            self.context_manager.set_current(keep);
+            self.context_manager.switch_context_visibility(
+                &mut self.sugarloaf,
+                now,
+                keep,
+            );
+        }
+        self.mark_dirty();
     }
 
     pub fn handle_island_click(
@@ -3026,6 +3066,12 @@ impl Screen<'_> {
             return true;
         }
 
+        // Flat style `+` slot, right after the last tab.
+        if !is_right_click && layout.new_tab_button_hit(mouse_x_unscaled) {
+            self.create_tab(clipboard);
+            return true;
+        }
+
         // A lone tab is drawn as a title centred across the strip rather than
         // an island in the first slot, so the whole strip belongs to it and a
         // right-click anywhere on it should reach that tab. The left margin
@@ -3070,12 +3116,13 @@ impl Screen<'_> {
             return true;
         }
 
-        if clicked_tab == self.context_manager.current_index()
+        // Islands close from the active tab; flat tabs from any hovered one.
+        if (layout.flat || clicked_tab == self.context_manager.current_index())
             && island::close_button_hit(&layout, clicked_tab, mouse_x_unscaled)
         {
             self.stop_hint_mode_if_active();
             self.last_close_press = Some((std::time::Instant::now(), mouse_x_unscaled));
-            self.close_tab(clipboard);
+            self.close_tab_at(clicked_tab, clipboard);
             return true;
         }
 
