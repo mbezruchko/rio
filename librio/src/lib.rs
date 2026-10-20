@@ -209,7 +209,7 @@ impl Listener {
             RioEvent::CloseTerminal(_) | RioEvent::Exit => {
                 self.delegate.close_surface(self.surface_id);
             }
-            RioEvent::ProgressReport(report) => {
+            RioEvent::ProgressReport(_, report) => {
                 use rio_vt::event::ProgressState;
                 let state = match report.state {
                     ProgressState::Remove => 0,
