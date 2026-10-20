@@ -38,6 +38,7 @@ use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use swash::text::cluster::Parser;
 use swash::text::cluster::Token;
@@ -47,6 +48,18 @@ use swash::text::Script;
 use swash::{tag_from_bytes, CacheKey, FontRef, Synthesis};
 
 pub use swash::{Style, Weight};
+
+/// `fonts.synthetic-bold`, set by `FontLibraryData::load`. Process-wide
+/// like the rasterizers; a change reloads the font library, which drops
+/// the glyphs rasterized with the old value.
+static SYNTHETIC_BOLD: AtomicU32 = AtomicU32::new(1f32.to_bits());
+
+/// How far synthetic bold dilates glyph outlines at `size_px`: 1/14 of
+/// the size, floored at one pixel, scaled by `fonts.synthetic-bold`.
+#[inline]
+pub fn synthetic_bold_width(size_px: f32) -> f32 {
+    (size_px / 14.0).max(1.0) * f32::from_bits(SYNTHETIC_BOLD.load(Ordering::Relaxed))
+}
 
 /// Which font face slot a spec is being resolved for. Drives bold/italic
 /// trait selection, so the user's spec doesn't need to
@@ -889,6 +902,7 @@ impl FontLibraryData {
         self.hinting = spec.hinting;
         #[cfg(target_os = "macos")]
         crate::font::macos::set_thicken(spec.thicken);
+        SYNTHETIC_BOLD.store(spec.synthetic_bold.max(0.0).to_bits(), Ordering::Relaxed);
         self.features = Arc::new(
             spec.features
                 .as_deref()

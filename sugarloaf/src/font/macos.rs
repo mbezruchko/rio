@@ -447,7 +447,7 @@ pub struct RasterizedGlyph {
 ///
 /// `synthetic_italic` applies a 15° right-lean via a sheared CTFont
 /// transform. `synthetic_bold` draws with `CGTextFillStroke` and a stroke
-/// width of `max(size/14, 1)`. Both are meant for when the font family
+/// width of `max(size/14, 1)` scaled by `fonts.synthetic-bold`. Both are meant for when the font family
 /// lacks the requested variant — normal bold/italic fonts are found by
 /// `find_font_path` and should leave both flags `false`.
 ///
@@ -468,6 +468,12 @@ pub fn rasterize_glyph(
         handle.base_font.clone_with_font_size(size_px as f64)
     };
 
+    let bold_width = if synthetic_bold {
+        crate::font::synthetic_bold_width(size_px) as CGFloat
+    } else {
+        0.0
+    };
+
     let glyphs = [glyph_id as CGGlyph];
     let mut raw_bounds =
         ct_font.get_bounding_rects_for_glyphs(kCTFontOrientationDefault, &glyphs);
@@ -477,12 +483,11 @@ pub fn rasterize_glyph(
     // the natural bounding rect — without expansion the stroke clips at the
     // canvas edges. Not applied to color/sbix fonts; bitmap emoji aren't
     // affected by synthetic bold.
-    if synthetic_bold && !is_color {
-        let line_width = (size_px as f64 / 14.0).max(1.0);
-        raw_bounds.size.width += line_width;
-        raw_bounds.size.height += line_width;
-        raw_bounds.origin.x -= line_width / 2.0;
-        raw_bounds.origin.y -= line_width / 2.0;
+    if bold_width > 0.0 && !is_color {
+        raw_bounds.size.width += bold_width;
+        raw_bounds.size.height += bold_width;
+        raw_bounds.origin.x -= bold_width / 2.0;
+        raw_bounds.origin.y -= bold_width / 2.0;
     }
 
     // COLR color fonts routinely ship an empty outline for each glyph — the
@@ -587,10 +592,9 @@ pub fn rasterize_glyph(
     // Synthetic bold via fill+stroke. Line width scales with size
     // (1/14 of points, floored at 1 device pixel) so bold weight looks
     // consistent across font sizes.
-    if synthetic_bold {
+    if bold_width > 0.0 {
         cx.set_text_drawing_mode(CGTextDrawingMode::CGTextFillStroke);
-        let line_width = (size_px as CGFloat / 14.0).max(1.0);
-        cx.set_line_width(line_width);
+        cx.set_line_width(bold_width);
     } else {
         cx.set_text_drawing_mode(CGTextDrawingMode::CGTextFill);
     }

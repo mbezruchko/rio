@@ -1046,6 +1046,21 @@ mod tests {
     }
 
     #[test]
+    fn test_synthetic_bold() {
+        assert_eq!(SugarloafFonts::default().synthetic_bold, 1.0);
+
+        let result = create_temporary_config(
+            "synthetic-bold",
+            r#"
+            [fonts]
+            synthetic-bold = 0.5
+        "#,
+        );
+
+        assert_eq!(result.fonts.synthetic_bold, 0.5);
+    }
+
+    #[test]
     fn test_change_theme() {
         let result = create_temporary_config(
             "change-theme",

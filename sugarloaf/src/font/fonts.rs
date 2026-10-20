@@ -116,6 +116,11 @@ pub fn default_bool_true() -> bool {
     true
 }
 
+#[inline]
+pub fn default_synthetic_bold() -> f32 {
+    1.
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SymbolMap {
     pub start: String,
@@ -138,6 +143,11 @@ pub struct SugarloafFonts {
     /// draws thinner strokes (iTerm2's "thin strokes", Ghostty's default).
     #[serde(default = "default_bool_true")]
     pub thicken: bool,
+    /// Weight of synthetic bold, drawn for fonts without a bold face
+    /// (e.g. Monaco), relative to the default stroke of `size / 14`.
+    /// `0.5` halves it; `0` draws bold text at regular weight.
+    #[serde(default = "default_synthetic_bold", rename = "synthetic-bold")]
+    pub synthetic_bold: f32,
     #[serde(default = "Option::default")]
     pub features: Option<Vec<String>>,
     #[serde(default = "Option::default")]
@@ -176,6 +186,7 @@ impl Default for SugarloafFonts {
             features: None,
             hinting: true,
             thicken: true,
+            synthetic_bold: default_synthetic_bold(),
             size: default_font_size(),
             family: None,
             regular: SugarloafFont::default(),

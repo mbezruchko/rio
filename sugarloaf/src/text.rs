@@ -1250,7 +1250,7 @@ fn rasterize_swash_glyph(
         };
     let mut image = GlyphImage::new();
     let embolden_amount = if synthetic_bold {
-        (size_px / 14.0).max(1.0)
+        crate::font::synthetic_bold_width(size_px)
     } else {
         0.0
     };
