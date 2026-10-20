@@ -201,6 +201,11 @@ pub struct Window {
     pub opacity_cells: bool,
     #[serde(default)]
     pub blur: WindowBlur,
+    /// macOS: radius of the `blur = true` backdrop blur, 80 when unset.
+    /// A smaller radius lets more of what's behind the window show
+    /// through, like iTerm2's per-profile blur radius.
+    #[serde(rename = "macos-blur-radius", default = "Option::default")]
+    pub macos_blur_radius: Option<u32>,
     #[cfg(feature = "renderer")]
     #[serde(rename = "background-image", skip_serializing)]
     pub background_image: Option<ImageProperties>,
@@ -257,6 +262,7 @@ impl Default for Window {
             background_image: None,
             decorations: Decorations::default(),
             blur: WindowBlur::default(),
+            macos_blur_radius: None,
             macos_use_unified_titlebar: false,
             macos_use_shadow: true,
             macos_traffic_light_position_x: None,

@@ -1061,6 +1061,22 @@ mod tests {
     }
 
     #[test]
+    fn test_macos_blur_radius() {
+        assert_eq!(Window::default().macos_blur_radius, None);
+
+        let result = create_temporary_config(
+            "macos-blur-radius",
+            r#"
+            [window]
+            blur = true
+            macos-blur-radius = 20
+        "#,
+        );
+
+        assert_eq!(result.window.macos_blur_radius, Some(20));
+    }
+
+    #[test]
     fn test_change_theme() {
         let result = create_temporary_config(
             "change-theme",

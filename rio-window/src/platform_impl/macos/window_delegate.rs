@@ -87,6 +87,10 @@ impl Default for PlatformSpecificWindowAttributes {
 
 const IDLE_VSYNC_STOP_TICKS: u32 = 30;
 
+/// `BlurStyle::System` radius unless `set_blur_radius` says otherwise;
+/// matches upstream winit.
+const DEFAULT_BLUR_RADIUS: i64 = 80;
+
 #[derive(Debug)]
 pub(crate) struct State {
     /// Strong reference to the global application state.
@@ -158,6 +162,9 @@ pub(crate) struct State {
     // `BlurStyle` only — opacity is plumbed through
     // `set_glass_opacity`.
     glass_opacity: Cell<f64>,
+    // CGS backdrop blur radius for `BlurStyle::System` (and the glass
+    // fallback). Applied by `set_blur`.
+    blur_radius: Cell<i64>,
 }
 
 declare_class!(
@@ -804,6 +811,7 @@ impl WindowDelegate {
             ),
             glass_effect: RefCell::new(None),
             glass_opacity: Cell::new(1.0),
+            blur_radius: Cell::new(DEFAULT_BLUR_RADIUS),
         });
         let delegate: Retained<WindowDelegate> =
             unsafe { msg_send_id![super(delegate), init] };
@@ -993,7 +1001,7 @@ impl WindowDelegate {
             }
             BlurStyle::System => {
                 self.uninstall_glass();
-                self.set_cgs_blur_radius(80);
+                self.set_cgs_blur_radius(self.ivars().blur_radius.get());
             }
             BlurStyle::MacosGlassRegular | BlurStyle::MacosGlassClear => {
                 if super::glass::GlassEffect::class_available() {
@@ -1009,14 +1017,14 @@ impl WindowDelegate {
                          Falling back to the standard system backdrop blur."
                     );
                     self.uninstall_glass();
-                    self.set_cgs_blur_radius(80);
+                    self.set_cgs_blur_radius(self.ivars().blur_radius.get());
                 }
             }
         }
     }
 
     /// CGS private-API knob — the legacy `window.blur = true` path.
-    /// Radius 80 matches upstream winit; 0 disables.
+    /// 0 disables.
     fn set_cgs_blur_radius(&self, radius: i64) {
         let window_number = unsafe { self.window().windowNumber() };
         unsafe {
@@ -2299,6 +2307,10 @@ impl WindowExtMacOS for WindowDelegate {
     fn set_traffic_light_position(&self, position: Option<(f64, f64)>) {
         self.ivars().traffic_light_position.set(position);
         self.move_traffic_light();
+    }
+
+    fn set_blur_radius(&self, radius: u32) {
+        self.ivars().blur_radius.set(i64::from(radius));
     }
 
     fn set_glass_opacity(&self, opacity: f64) {

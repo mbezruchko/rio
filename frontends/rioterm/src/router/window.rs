@@ -281,6 +281,7 @@ pub fn configure_window(winit_window: &Window, config: &Config) {
     {
         use rio_window::platform::macos::WindowExtMacOS;
         winit_window.set_glass_opacity(config.window.opacity as f64);
+        winit_window.set_blur_radius(config.window.macos_blur_radius.unwrap_or(80));
     }
 
     winit_window.set_blur(config.window.blur.into());

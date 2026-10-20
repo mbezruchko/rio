@@ -145,6 +145,11 @@ pub trait WindowExtMacOS {
     /// the `tintColor = bg.withAlphaComponent(opacity)` step in
     /// AppKit-native glass setups.
     fn set_glass_opacity(&self, opacity: f64);
+
+    /// Radius of the [`crate::window::BlurStyle::System`] backdrop blur
+    /// (default 80). Stored for the next
+    /// [`crate::window::Window::set_blur`], which applies it.
+    fn set_blur_radius(&self, radius: u32);
 }
 
 impl WindowExtMacOS for Window {
@@ -180,6 +185,12 @@ impl WindowExtMacOS for Window {
     fn set_glass_opacity(&self, opacity: f64) {
         self.window
             .maybe_queue_on_main(move |w| w.set_glass_opacity(opacity))
+    }
+
+    #[inline]
+    fn set_blur_radius(&self, radius: u32) {
+        self.window
+            .maybe_queue_on_main(move |w| w.set_blur_radius(radius))
     }
 
     #[inline]
