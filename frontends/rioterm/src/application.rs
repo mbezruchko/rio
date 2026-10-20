@@ -2320,11 +2320,21 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         }
                                     };
 
+                                    // The Metal layer already paints the bg at
+                                    // `bg_color.a` over the whole window; a
+                                    // translucent native background under it
+                                    // stacks a second layer and squares the
+                                    // transparency (0.955 let 0.2% through,
+                                    // not 4.5%). Keep it clear instead.
                                     #[cfg(target_os = "macos")]
                                     {
+                                        let alpha = if bg_color.a < 1.0 {
+                                            0.0
+                                        } else {
+                                            bg_color.a
+                                        };
                                         route.window.winit_window.set_background_color(
-                                            bg_color.r, bg_color.g, bg_color.b,
-                                            bg_color.a,
+                                            bg_color.r, bg_color.g, bg_color.b, alpha,
                                         );
                                     }
 
