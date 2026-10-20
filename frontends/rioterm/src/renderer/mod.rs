@@ -795,20 +795,26 @@ impl Renderer {
                 // `layout_rect` leaves a sub-pixel un-dimmed fringe at
                 // the right/bottom edges of inactive splits because
                 // taffy allocates fractional sizes while the grid
-                // snaps to whole cells.
+                // snaps to whole cells. The grid alone is only a lower
+                // bound though: the sub-cell remainder of the panel
+                // (layout size not a multiple of the cell size) would
+                // stay un-dimmed, which shows as a strip on the
+                // right/bottom whenever the tint differs from the
+                // background. Cover the whole panel rect too.
                 let dim = grid_context.val.dimension;
                 let cell_w = dim.cell.cell_width as f32;
                 let cell_h = dim.cell.cell_height as f32;
                 let cols = dim.columns.max(1) as f32;
                 let rows = dim.lines.max(1) as f32;
-                let panel_left =
-                    (grid_context.layout_rect[0] + grid_scaled_margin.left).round();
-                let panel_top =
-                    (grid_context.layout_rect[1] + grid_scaled_margin.top).round();
+                let [layout_x, layout_y, layout_w, layout_h] = grid_context.layout_rect;
+                let panel_left = (layout_x + grid_scaled_margin.left).round();
+                let panel_top = (layout_y + grid_scaled_margin.top).round();
+                let panel_right = (layout_x + layout_w + grid_scaled_margin.left).round();
+                let panel_bottom = (layout_y + layout_h + grid_scaled_margin.top).round();
                 let x = panel_left / scale_factor;
                 let y = panel_top / scale_factor;
-                let w = (cols * cell_w) / scale_factor;
-                let h = (rows * cell_h) / scale_factor;
+                let w = (cols * cell_w).max(panel_right - panel_left) / scale_factor;
+                let h = (rows * cell_h).max(panel_bottom - panel_top) / scale_factor;
                 sugarloaf.rect(None, x, y, w, h, dim_color, 0.0, 3);
             }
         }
