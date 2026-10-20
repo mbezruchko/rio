@@ -1495,6 +1495,9 @@ impl Screen<'_> {
                             self.mark_dirty();
                         }
                     }
+                    Act::CloseWindow => {
+                        self.context_manager.close_window();
+                    }
                     Act::RestoreArrangement => {
                         let palette = &mut self.renderer.command_palette;
                         palette.set_enabled(true);
@@ -4072,6 +4075,9 @@ impl Screen<'_> {
                 // intercepted) or an external caller firing the action
                 // directly — do nothing so the palette just closes without
                 // side effects.
+            }
+            PaletteAction::CloseWindow => {
+                self.context_manager.close_window();
             }
             PaletteAction::Quit => {
                 self.context_manager.quit();

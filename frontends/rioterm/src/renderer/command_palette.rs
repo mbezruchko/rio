@@ -80,6 +80,7 @@ pub enum PaletteAction {
     SelectPrevSplit,
     ConfigEditor,
     WindowCreateNew,
+    CloseWindow,
     IncreaseFontSize,
     DecreaseFontSize,
     ResetFontSize,
@@ -171,6 +172,11 @@ const COMMANDS: &[Command] = &[
         title: "New Window",
         shortcut: "Cmd+N",
         action: PaletteAction::WindowCreateNew,
+    },
+    Command {
+        title: "Close Window",
+        shortcut: "Cmd+Shift+W",
+        action: PaletteAction::CloseWindow,
     },
     Command {
         title: "Increase Font Size",

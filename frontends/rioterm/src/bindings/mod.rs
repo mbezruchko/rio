@@ -272,6 +272,7 @@ impl From<String> for Action {
             "opencommandpalette" => Some(Action::OpenCommandPalette),
             "restorearrangement" => Some(Action::RestoreArrangement),
             "savearrangement" => Some(Action::SaveArrangement),
+            "closewindow" => Some(Action::CloseWindow),
             "none" => Some(Action::None),
             _ => None,
         };
@@ -530,6 +531,9 @@ pub enum Action {
 
     /// Name and save every window as an arrangement (command palette).
     SaveArrangement,
+
+    /// Close the current window with all its tabs.
+    CloseWindow,
 
     /// Allow receiving char input.
     ReceiveChar,
@@ -1138,6 +1142,7 @@ pub fn platform_key_bindings(
         "p", ModifiersState::SUPER | ModifiersState::SHIFT; Action::OpenCommandPalette;
         "r", ModifiersState::SUPER | ModifiersState::SHIFT; Action::RestoreArrangement;
         "s", ModifiersState::SUPER | ModifiersState::SHIFT; Action::SaveArrangement;
+        "w", ModifiersState::SUPER | ModifiersState::SHIFT; Action::CloseWindow;
 
         // Search
         "f", ModifiersState::SUPER, ~BindingMode::SEARCH; Action::SearchForward;

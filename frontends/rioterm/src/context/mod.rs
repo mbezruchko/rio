@@ -637,6 +637,13 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             .send_event(RioEvent::CreateWindow, self.window_id);
     }
 
+    /// Close this window and every tab in it.
+    #[inline]
+    pub fn close_window(&self) {
+        self.event_proxy
+            .send_event(RioEvent::CloseWindow, self.window_id);
+    }
+
     /// Save every window as the named arrangement (handled app-wide).
     #[inline]
     pub fn save_arrangement(&self, name: String) {
