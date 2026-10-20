@@ -57,6 +57,15 @@ pub struct Route<'a> {
     /// answers with an event loop exit so `exiting` drops every route
     /// (hanging up each PTY child) before the process exits.
     pub quit_requested: bool,
+    /// iTerm2-style window number for `SelectWindow` (`⌥⌘N`); terminal
+    /// windows only, stable for the window's lifetime.
+    pub window_number: Option<usize>,
+}
+
+/// Lowest window number not in `used`: a closed window's number is
+/// reused, open windows keep theirs.
+fn lowest_free_window_number(used: impl Iterator<Item = usize> + Clone) -> usize {
+    (1..).find(|n| !used.clone().any(|u| u == *n)).unwrap_or(1)
 }
 
 impl Route<'_> {
@@ -72,6 +81,7 @@ impl Route<'_> {
             path,
             window,
             quit_requested: false,
+            window_number: None,
         }
     }
 }
@@ -796,12 +806,19 @@ impl Router<'_> {
         );
         let id: WindowId = window.winit_window.id().into();
 
+        let window_number = lowest_free_window_number(
+            self.routes.values().filter_map(|route| route.window_number),
+        );
         let mut route = Route {
             window,
             path: RoutePath::Terminal,
             assistant: Assistant::new(),
             quit_requested: false,
+            window_number: Some(window_number),
         };
+        if let Some(island) = route.window.screen.renderer.island.as_mut() {
+            island.window_number = Some(window_number);
+        }
 
         if let Some(err) = &self.propagated_report {
             route.report_error(err);
@@ -908,6 +925,7 @@ impl Router<'_> {
                 path: RoutePath::Terminal,
                 assistant: Assistant::new(),
                 quit_requested: false,
+                window_number: None,
             },
         );
         self.quake_window_id = Some(id);
@@ -941,6 +959,7 @@ impl Router<'_> {
                 path: RoutePath::Terminal,
                 assistant: Assistant::new(),
                 quit_requested: false,
+                window_number: None,
             },
         );
     }
@@ -1373,5 +1392,19 @@ mod grid_size_tests {
             ),
             (300, 200)
         );
+    }
+}
+
+#[cfg(test)]
+mod window_number_tests {
+    use super::lowest_free_window_number;
+
+    #[test]
+    fn numbers_fill_the_lowest_gap() {
+        assert_eq!(lowest_free_window_number([].into_iter()), 1);
+        assert_eq!(lowest_free_window_number([1, 2].into_iter()), 3);
+        // Window 2 closed: the next window takes 2, the others keep theirs.
+        assert_eq!(lowest_free_window_number([1, 3].into_iter()), 2);
+        assert_eq!(lowest_free_window_number([2, 3].into_iter()), 1);
     }
 }

@@ -95,6 +95,12 @@ const FLAT_SEPARATOR_WIDTH: f32 = 1.0;
 // Underline marking the active tab (light over any fill on dark themes).
 const FLAT_ACTIVE_INDICATOR_HEIGHT: f32 = 2.0;
 const NEW_TAB_BUTTON_WIDTH: f32 = 32.0;
+// The `⌥⌘N` window label right of the traffic lights.
+#[cfg(target_os = "macos")]
+const FLAT_WINDOW_LABEL_WIDTH: f32 = 52.0;
+// Gap between the traffic lights' zone and the label.
+#[cfg(target_os = "macos")]
+const FLAT_WINDOW_LABEL_GAP: f32 = 10.0;
 const NEW_TAB_GLYPH_HALF: f32 = 5.0;
 
 struct TabDrag {
@@ -197,8 +203,13 @@ pub fn tab_strip_layout(
     max_tab_width: f32,
     flat: bool,
 ) -> TabStripLayout {
+    // Flat tabs leave room for the `⌥⌘N` window label after the lights.
     #[cfg(target_os = "macos")]
-    let left_margin = ISLAND_MARGIN_LEFT_MACOS;
+    let left_margin = if flat {
+        ISLAND_MARGIN_LEFT_MACOS + FLAT_WINDOW_LABEL_WIDTH
+    } else {
+        ISLAND_MARGIN_LEFT_MACOS
+    };
     #[cfg(not(target_os = "macos"))]
     let left_margin = 0.0;
 
@@ -481,29 +492,44 @@ fn shortcut_digit(tab_index: usize, num_tabs: usize) -> Option<char> {
     char::from_digit(tab_index as u32 + 1, 10)
 }
 
-/// Right-aligned `⌘N` hint. Drawn as two runs: the UI text layer picks
-/// one font per run from its first char, and the terminal font may not
-/// carry ⌘ — the digit stays in the title's font.
-fn draw_shortcut_hint(
+/// Where a shortcut label is anchored on the strip.
+enum Anchor {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Left(f32),
+    Right(f32),
+}
+
+/// A dimmed shortcut label such as `⌘3` or `⌥⌘1`. Drawn as two runs: the
+/// UI text layer picks one font per run from its first char, and the
+/// terminal font may not carry ⌘ or ⌥ — the digit stays in the title's
+/// font.
+/// Returns the label's left edge.
+fn draw_shortcut(
     sugarloaf: &mut Sugarloaf,
-    right: f32,
+    anchor: Anchor,
+    symbols: &str,
     digit: char,
     color: [f32; 4],
-) {
+    bold: bool,
+) -> f32 {
     let opts = DrawOpts {
         font_size: TITLE_FONT_SIZE,
         color: color_u8([color[0], color[1], color[2], color[3] * FLAT_HINT_ALPHA]),
+        bold,
         ..DrawOpts::default()
     };
     let mut buf = [0u8; 4];
     let digit = digit.encode_utf8(&mut buf);
     let ui = sugarloaf.text_mut();
-    let cmd_width = ui.measure("⌘", &opts);
-    let digit_width = ui.measure(digit, &opts);
-    let x = right - cmd_width - digit_width;
+    let symbols_width = ui.measure(symbols, &opts);
+    let x = match anchor {
+        Anchor::Left(left) => left,
+        Anchor::Right(right) => right - symbols_width - ui.measure(digit, &opts),
+    };
     let y = (ISLAND_HEIGHT / 2.0) - (TITLE_FONT_SIZE / 2.);
-    ui.draw(x, y, "⌘", &opts);
-    ui.draw(x + cmd_width, y, digit, &opts);
+    ui.draw(x, y, symbols, &opts);
+    ui.draw(x + symbols_width, y, digit, &opts);
+    x
 }
 
 fn draw_new_tab_button(sugarloaf: &mut Sugarloaf, cx: f32, color: [f32; 4]) {
@@ -519,6 +545,9 @@ pub struct Island {
     pub max_tab_width: f32,
     /// `navigation.tab-style`.
     pub tab_style: TabStyle,
+    /// This window's number, shown as `⌥⌘N` by flat tabs (`SelectWindow`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub window_number: Option<usize>,
     pub inactive_text_color: [f32; 4],
     pub active_text_color: [f32; 4],
     /// Current progress bar state
@@ -573,6 +602,7 @@ impl Island {
             hide_if_single,
             max_tab_width,
             tab_style,
+            window_number: None,
             inactive_text_color,
             active_text_color,
             progress_state: None,
@@ -957,6 +987,26 @@ impl Island {
         let num_tabs = context_manager.len();
         let current_tab_index = context_manager.current_index();
 
+        // iTerm2-style `⌥⌘N` window label right of the traffic lights,
+        // kept while the tabs themselves are hidden.
+        #[cfg(target_os = "macos")]
+        if self.tab_style == TabStyle::Flat {
+            if let Some(digit) = self
+                .window_number
+                .filter(|n| (1..=9).contains(n))
+                .and_then(|n| char::from_digit(n as u32, 10))
+            {
+                draw_shortcut(
+                    sugarloaf,
+                    Anchor::Left(ISLAND_MARGIN_LEFT_MACOS + FLAT_WINDOW_LABEL_GAP),
+                    "⌥⌘",
+                    digit,
+                    self.inactive_text_color,
+                    true,
+                );
+            }
+        }
+
         // Immediate-mode: no cached ids to hide. If we early-return
         // without drawing, the tabs just don't appear this frame.
         if self.hide_if_single && num_tabs == 1 {
@@ -1269,11 +1319,13 @@ impl Island {
                 }
                 if cfg!(target_os = "macos") && !hidden_by_drag {
                     if let Some(digit) = shortcut_digit(tab_index, num_tabs) {
-                        draw_shortcut_hint(
+                        draw_shortcut(
                             sugarloaf,
-                            tab_x + tab_width - FLAT_HINT_MARGIN_RIGHT,
+                            Anchor::Right(tab_x + tab_width - FLAT_HINT_MARGIN_RIGHT),
+                            "⌘",
                             digit,
                             text_color,
+                            false,
                         );
                     }
                 }

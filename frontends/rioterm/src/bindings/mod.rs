@@ -282,6 +282,14 @@ impl From<String> for Action {
             return action_from_string.unwrap_or(Action::None);
         }
 
+        let re = regex::Regex::new(r"selectwindow\(([^()]+)\)").unwrap();
+        for capture in re.captures_iter(&action) {
+            if let Some(matched) = capture.get(1) {
+                let number: usize = matched.as_str().parse().unwrap_or(1);
+                return Action::SelectWindow(number);
+            }
+        }
+
         let re = regex::Regex::new(r"selecttab\(([^()]+)\)").unwrap();
         for capture in re.captures_iter(&action) {
             if let Some(matched) = capture.get(1) {
@@ -485,6 +493,9 @@ pub enum Action {
 
     // Tab selections
     SelectTab(usize),
+
+    /// Focus the window with this number, as labeled by flat tabs (1-based).
+    SelectWindow(usize),
     SelectLastTab,
 
     Search(SearchAction),
@@ -1148,6 +1159,15 @@ pub fn platform_key_bindings(
         "s", ModifiersState::SUPER | ModifiersState::SHIFT; Action::SaveArrangement;
         "w", ModifiersState::SUPER | ModifiersState::SHIFT; Action::CloseWindow;
         "t", ModifiersState::SUPER | ModifiersState::SHIFT; Action::ReopenClosedTab;
+        "1", ModifiersState::SUPER | ModifiersState::ALT; Action::SelectWindow(1);
+        "2", ModifiersState::SUPER | ModifiersState::ALT; Action::SelectWindow(2);
+        "3", ModifiersState::SUPER | ModifiersState::ALT; Action::SelectWindow(3);
+        "4", ModifiersState::SUPER | ModifiersState::ALT; Action::SelectWindow(4);
+        "5", ModifiersState::SUPER | ModifiersState::ALT; Action::SelectWindow(5);
+        "6", ModifiersState::SUPER | ModifiersState::ALT; Action::SelectWindow(6);
+        "7", ModifiersState::SUPER | ModifiersState::ALT; Action::SelectWindow(7);
+        "8", ModifiersState::SUPER | ModifiersState::ALT; Action::SelectWindow(8);
+        "9", ModifiersState::SUPER | ModifiersState::ALT; Action::SelectWindow(9);
 
         // Search
         "f", ModifiersState::SUPER, ~BindingMode::SEARCH; Action::SearchForward;

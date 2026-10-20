@@ -1005,6 +1005,17 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     self.app_id.as_deref(),
                 );
             }
+            RioEventType::Rio(RioEvent::SelectWindow(number)) => {
+                if let Some(route) = self
+                    .router
+                    .routes
+                    .values()
+                    .find(|route| route.window_number == Some(number))
+                {
+                    route.window.winit_window.set_minimized(false);
+                    route.window.winit_window.focus_window();
+                }
+            }
             RioEventType::Rio(RioEvent::SaveArrangement(name)) => {
                 let arrangement = self.router.arrangement();
                 if let Err(error) = crate::arrangement::save(&name, &arrangement) {

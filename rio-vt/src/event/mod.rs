@@ -180,6 +180,8 @@ pub enum RioEvent {
     SaveArrangement(String),
     /// Open the named arrangement in new windows.
     RestoreArrangement(String),
+    /// Focus the window with this number (`⌥⌘N`).
+    SelectWindow(usize),
     ToggleQuake,
     CloseWindow,
     CreateNativeTab(Option<String>),
@@ -374,6 +376,7 @@ impl Debug for RioEvent {
             RioEvent::RestoreArrangement(name) => {
                 write!(f, "RestoreArrangement({name})")
             }
+            RioEvent::SelectWindow(number) => write!(f, "SelectWindow({number})"),
             RioEvent::ToggleQuake => write!(f, "ToggleQuake"),
             RioEvent::CloseWindow => write!(f, "CloseWindow"),
             RioEvent::CreateNativeTab(_) => write!(f, "CreateNativeTab"),

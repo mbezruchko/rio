@@ -1509,6 +1509,9 @@ impl Screen<'_> {
                     Act::CloseWindow => {
                         self.context_manager.close_window();
                     }
+                    Act::SelectWindow(number) => {
+                        self.context_manager.select_window(*number);
+                    }
                     Act::ReopenClosedTab => {
                         self.cancel_search(clipboard);
                         self.reopen_closed_tab();

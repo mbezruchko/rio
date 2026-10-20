@@ -637,6 +637,13 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             .send_event(RioEvent::CreateWindow, self.window_id);
     }
 
+    /// Focus the window numbered `number` (handled app-wide).
+    #[inline]
+    pub fn select_window(&self, number: usize) {
+        self.event_proxy
+            .send_event(RioEvent::SelectWindow(number), self.window_id);
+    }
+
     /// Close this window and every tab in it.
     #[inline]
     pub fn close_window(&self) {
