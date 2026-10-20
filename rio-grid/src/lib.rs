@@ -1841,6 +1841,60 @@ fn shape_cached(
     Some((ascent_px, advance))
 }
 
+/// Ascent that `ensure_glyph_by_id` hangs a run's glyphs from. Every
+/// face but color emoji sits on the regular font's baseline, as in
+/// iTerm2: hanging a fallback face from its own ascent (Menlo's is
+/// shorter than Monaco's, for `➜`) lifts its glyphs off the line.
+fn baseline_ascent(
+    rasterizer: &mut GridGlyphRasterizer,
+    font_id: u32,
+    is_emoji: bool,
+    run_ascent: i16,
+    size_u16: u16,
+    size_bucket: u16,
+    font_library: &FontLibrary,
+) -> i16 {
+    const REGULAR: u32 = rio_backend::sugarloaf::font::FONT_ID_REGULAR as u32;
+    if is_emoji || font_id == REGULAR {
+        return run_ascent;
+    }
+    if let Some(&ascent) = rasterizer.ascent_cache.get(&(REGULAR, size_bucket)) {
+        return ascent;
+    }
+    match font_ascent(font_library, REGULAR, size_u16) {
+        Some(ascent) => {
+            rasterizer
+                .ascent_cache
+                .insert((REGULAR, size_bucket), ascent);
+            ascent
+        }
+        None => run_ascent,
+    }
+}
+
+/// `font_id`'s ascent at `size_u16`, rounded like the shaping helpers
+/// round it into `ascent_cache`.
+#[cfg(target_os = "macos")]
+fn font_ascent(font_library: &FontLibrary, font_id: u32, size_u16: u16) -> Option<i16> {
+    let handle = font_library.ct_font(font_id as usize)?;
+    let m = rio_backend::sugarloaf::font::macos::font_metrics(&handle, size_u16 as f32);
+    Some(m.ascent.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn font_ascent(font_library: &FontLibrary, font_id: u32, size_u16: u16) -> Option<i16> {
+    use rio_backend::sugarloaf::swash::FontRef;
+
+    let (data, offset, key) = font_library.inner.read().get_data(&(font_id as usize))?;
+    let font_ref = FontRef {
+        data: data.as_ref(),
+        offset,
+        key,
+    };
+    let m = font_ref.metrics(&[]).scale(size_u16 as f32);
+    Some(m.ascent.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+}
+
 /// Run-level fg emission. Shapes once per run, emits one CellText per
 /// shaped glyph. Works on both macOS (CoreText) and non-macOS (swash).
 ///
@@ -2314,6 +2368,15 @@ pub fn build_row_fg<P: GridPalette>(
             x = end;
             continue;
         };
+        let ascent_px = baseline_ascent(
+            rasterizer,
+            font_id,
+            is_emoji,
+            ascent_px,
+            size_u16,
+            size_bucket,
+            font_library,
+        );
 
         let (synthetic_bold, synthetic_italic) =
             rasterizer.get_synthesis(font_id, font_library);
@@ -2670,6 +2733,15 @@ fn emit_preedit_cluster(
         };
         (hash, ascent_px)
     };
+    let ascent_px = baseline_ascent(
+        rasterizer,
+        font_id,
+        is_emoji,
+        ascent_px,
+        size_u16,
+        size_bucket,
+        font_library,
+    );
 
     let (synthetic_bold, synthetic_italic) =
         rasterizer.get_synthesis(font_id, font_library);
@@ -3337,6 +3409,32 @@ mod preedit_suppression_tests {
         let (font_id, _) = r.resolve_font(base, 0, lib, 0);
         shape_preedit_text(r, text, font_id, size, size, lib)
             .map(|(_, _, advance)| advance)
+    }
+
+    /// A fallback face sits on the regular font's baseline, not on its
+    /// own ascent; color emoji keep their own.
+    #[test]
+    fn fallback_faces_share_the_regular_baseline() {
+        let font_library = FontLibrary::default();
+        let mut r = GridGlyphRasterizer::new();
+        let size: u16 = 34;
+        let Some(regular) = font_ascent(&font_library, 0, size) else {
+            // No font handle in this environment: nothing to measure.
+            return;
+        };
+
+        assert_eq!(
+            baseline_ascent(&mut r, 0, false, regular, size, size, &font_library),
+            regular
+        );
+        assert_eq!(
+            baseline_ascent(&mut r, 7, false, regular + 5, size, size, &font_library),
+            regular
+        );
+        assert_eq!(
+            baseline_ascent(&mut r, 7, true, regular + 5, size, size, &font_library),
+            regular + 5
+        );
     }
 
     /// A ZWJ emoji must fit its 2 reserved cells under the shaped-
